@@ -1,0 +1,19 @@
+server:
+  port: 18091
+  error:
+    include-message: always
+spring:
+  application:
+    name: datasphere-ds-migrator
+  datasource:
+    url: ${MIGRATOR_DB_URL:jdbc:mysql://81.69.15.136:3306/datasphere_ds_migrator?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MIGRATOR_DB_USERNAME:root}
+    password: ${MIGRATOR_DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  sql:
+    init:
+      mode: always
+      encoding: UTF-8
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
