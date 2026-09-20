@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS migration_setting (
   target_base_url VARCHAR(1000),
   target_token VARCHAR(4000),
   target_operator VARCHAR(255),
+  target_username VARCHAR(255),
+  target_password VARCHAR(1000),
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

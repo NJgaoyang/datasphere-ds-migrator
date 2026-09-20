@@ -8,15 +8,15 @@ public final class MigrationModels {
 
     public record Settings(
             String sourceJdbcUrl, String sourceUsername, String sourcePassword,
-            String targetBaseUrl, String targetToken, String targetOperator) { }
+            String targetBaseUrl, String targetUsername, String targetPassword) { }
 
     public record SettingsView(
             String sourceJdbcUrl, String sourceUsername, boolean sourcePasswordConfigured,
-            String targetBaseUrl, boolean targetTokenConfigured, String targetOperator) { }
+            String targetBaseUrl, String targetUsername, boolean targetPasswordConfigured) { }
 
     public record SettingsUpdate(
             String sourceJdbcUrl, String sourceUsername, String sourcePassword,
-            String targetBaseUrl, String targetToken, String targetOperator) { }
+            String targetBaseUrl, String targetUsername, String targetPassword) { }
 
     public record ConnectionTest(boolean success, String message, String version) { }
 

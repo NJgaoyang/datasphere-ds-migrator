@@ -127,7 +127,7 @@
       <el-tab-pane label="数据库设置" name="settings">
     <section class="panel config-panel">
       <div class="section-title">
-        <div><h2>连接配置</h2><span>源端只读，目标端通过 DataSphere REST API 写入</span></div>
+        <div><h2>连接配置</h2><span>源端只读，目标端使用 DataSphere 账号登录后通过 REST API 写入</span></div>
       </div>
       <div class="config-grid">
           <div class="config-block">
@@ -147,11 +147,11 @@
             <el-form label-position="top">
               <el-form-item label="Base URL"><el-input v-model="settings.targetBaseUrl" /></el-form-item>
               <div class="two-col">
-                <el-form-item label="操作用户"><el-input v-model="settings.targetOperator" /></el-form-item>
-                <el-form-item label="Bearer Token"><el-input v-model="settings.targetToken" type="password" show-password placeholder="认证关闭时可留空" /></el-form-item>
+                <el-form-item label="登录用户名"><el-input v-model="settings.targetUsername" placeholder="例如 admin" /></el-form-item>
+                <el-form-item label="登录密码"><el-input v-model="settings.targetPassword" type="password" show-password placeholder="留空表示不修改" /></el-form-item>
               </div>
-              <el-button :loading="testTargetLoading" @click="testTarget">测试目标端连接</el-button>
-              <span class="configured" v-if="settings.targetTokenConfigured">已配置 Token</span>
+              <el-button :loading="testTargetLoading" @click="testTarget">登录并测试 DataSphere</el-button>
+              <span class="configured" v-if="settings.targetPasswordConfigured">已配置密码</span>
             </el-form>
           </div>
           <div class="config-footer">
@@ -171,7 +171,7 @@ import axios from 'axios'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-const settings = ref({ sourceJdbcUrl: '', sourceUsername: '', sourcePassword: '', targetBaseUrl: '', targetToken: '', targetOperator: '' })
+const settings = ref({ sourceJdbcUrl: '', sourceUsername: '', sourcePassword: '', targetBaseUrl: '', targetUsername: '', targetPassword: '' })
 const runs = ref([])
 const selectedRun = ref(null)
 const items = ref([])
@@ -215,13 +215,13 @@ const formatTime = value => value ? String(value).replace('T', ' ').slice(0, 19)
 
 async function loadSettings() {
   const { data } = await axios.get('/api/settings')
-  settings.value = { ...data, sourcePassword: '', targetToken: '' }
+  settings.value = { ...data, sourcePassword: '', targetPassword: '' }
 }
 async function saveSettings() {
   saveLoading.value = true
   try {
     const { data } = await axios.put('/api/settings', settings.value)
-    settings.value = { ...data, sourcePassword: '', targetToken: '' }
+    settings.value = { ...data, sourcePassword: '', targetPassword: '' }
     ElMessage.success('连接配置已保存')
   } catch (e) { showError(e) } finally { saveLoading.value = false }
 }
