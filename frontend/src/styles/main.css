@@ -59,3 +59,8 @@ button, input { font: inherit; }
 .scope-node > div { display: flex; align-items: center; gap: 12px; }
 .scope-node strong { font-size: 13px; }
 .scope-node span { color: #8a91a2; font-size: 12px; }
+
+.main-tabs > .el-tabs__header { margin: 0 0 16px; padding: 0 4px; }
+.main-tabs > .el-tabs__header .el-tabs__item { height: 42px; font-size: 15px; font-weight: 600; padding: 0 22px; }
+.main-tabs > .el-tabs__content { overflow: visible; }
+.main-tabs .config-panel { margin-bottom: 0; }

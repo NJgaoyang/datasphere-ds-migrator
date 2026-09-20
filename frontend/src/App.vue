@@ -8,49 +8,12 @@
       </div>
       <div class="header-actions">
         <el-button @click="loadAll">刷新</el-button>
-        <el-button type="primary" :loading="actionLoading" @click="startAnalyze">开始分析</el-button>
+        <el-button v-if="mainTab === 'analysis'" type="primary" :loading="actionLoading" @click="startAnalyze">开始分析</el-button>
       </div>
     </header>
 
-    <section class="panel config-panel">
-      <div class="section-title">
-        <div><h2>连接配置</h2><span>源端只读，目标端通过 DataSphere REST API 写入</span></div>
-        <el-button text @click="configOpen = !configOpen">{{ configOpen ? '收起' : '展开' }}</el-button>
-      </div>
-      <el-collapse-transition>
-        <div v-show="configOpen" class="config-grid">
-          <div class="config-block">
-            <div class="block-title">DolphinScheduler 元数据库</div>
-            <el-form label-position="top">
-              <el-form-item label="JDBC URL"><el-input v-model="settings.sourceJdbcUrl" /></el-form-item>
-              <div class="two-col">
-                <el-form-item label="用户名"><el-input v-model="settings.sourceUsername" /></el-form-item>
-                <el-form-item label="密码"><el-input v-model="settings.sourcePassword" type="password" show-password placeholder="留空表示不修改" /></el-form-item>
-              </div>
-              <el-button :loading="testSourceLoading" @click="testSource">测试源端连接</el-button>
-              <span class="configured" v-if="settings.sourcePasswordConfigured">已配置密码</span>
-            </el-form>
-          </div>
-          <div class="config-block">
-            <div class="block-title">DataSphere</div>
-            <el-form label-position="top">
-              <el-form-item label="Base URL"><el-input v-model="settings.targetBaseUrl" /></el-form-item>
-              <div class="two-col">
-                <el-form-item label="操作用户"><el-input v-model="settings.targetOperator" /></el-form-item>
-                <el-form-item label="Bearer Token"><el-input v-model="settings.targetToken" type="password" show-password placeholder="认证关闭时可留空" /></el-form-item>
-              </div>
-              <el-button :loading="testTargetLoading" @click="testTarget">测试目标端连接</el-button>
-              <span class="configured" v-if="settings.targetTokenConfigured">已配置 Token</span>
-            </el-form>
-          </div>
-          <div class="config-footer">
-            <el-button type="primary" :loading="saveLoading" @click="saveSettings">保存连接配置</el-button>
-            <span>敏感字段留空时保留原配置，不会回显明文。</span>
-          </div>
-        </div>
-      </el-collapse-transition>
-    </section>
-
+    <el-tabs v-model="mainTab" class="main-tabs">
+      <el-tab-pane label="元数据分析" name="analysis">
     <section class="panel action-panel">
       <div class="section-title">
         <div><h2>迁移操作</h2><span>正式迁移不会自动发布或上线工作流</span></div>
@@ -160,7 +123,47 @@
         </el-tabs>
       </div>
     </section>
+      </el-tab-pane>
+      <el-tab-pane label="数据库设置" name="settings">
+    <section class="panel config-panel">
+      <div class="section-title">
+        <div><h2>连接配置</h2><span>源端只读，目标端通过 DataSphere REST API 写入</span></div>
+      </div>
+      <div class="config-grid">
+          <div class="config-block">
+            <div class="block-title">DolphinScheduler 元数据库</div>
+            <el-form label-position="top">
+              <el-form-item label="JDBC URL"><el-input v-model="settings.sourceJdbcUrl" /></el-form-item>
+              <div class="two-col">
+                <el-form-item label="用户名"><el-input v-model="settings.sourceUsername" /></el-form-item>
+                <el-form-item label="密码"><el-input v-model="settings.sourcePassword" type="password" show-password placeholder="留空表示不修改" /></el-form-item>
+              </div>
+              <el-button :loading="testSourceLoading" @click="testSource">测试源端连接</el-button>
+              <span class="configured" v-if="settings.sourcePasswordConfigured">已配置密码</span>
+            </el-form>
+          </div>
+          <div class="config-block">
+            <div class="block-title">DataSphere</div>
+            <el-form label-position="top">
+              <el-form-item label="Base URL"><el-input v-model="settings.targetBaseUrl" /></el-form-item>
+              <div class="two-col">
+                <el-form-item label="操作用户"><el-input v-model="settings.targetOperator" /></el-form-item>
+                <el-form-item label="Bearer Token"><el-input v-model="settings.targetToken" type="password" show-password placeholder="认证关闭时可留空" /></el-form-item>
+              </div>
+              <el-button :loading="testTargetLoading" @click="testTarget">测试目标端连接</el-button>
+              <span class="configured" v-if="settings.targetTokenConfigured">已配置 Token</span>
+            </el-form>
+          </div>
+          <div class="config-footer">
+            <el-button type="primary" :loading="saveLoading" @click="saveSettings">保存连接配置</el-button>
+            <span>敏感字段留空时保留原配置，不会回显明文。</span>
+          </div>
+      </div>
+    </section>
+      </el-tab-pane>
+    </el-tabs>
   </div>
+
 </template>
 
 <script setup>
@@ -174,8 +177,8 @@ const selectedRun = ref(null)
 const items = ref([])
 const issues = ref([])
 const events = ref([])
+const mainTab = ref('analysis')
 const activeTab = ref('items')
-const configOpen = ref(true)
 const saveLoading = ref(false)
 const testSourceLoading = ref(false)
 const testTargetLoading = ref(false)
