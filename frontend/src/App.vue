@@ -57,10 +57,40 @@
       </div>
       <div class="action-row">
         <el-button type="primary" :loading="actionLoading" @click="startAnalyze">1. 分析元数据</el-button>
-        <el-button :loading="actionLoading" :disabled="!latestAnalysisId" @click="startDryRun">2. 试运行</el-button>
-        <el-button type="danger" plain :loading="actionLoading" :disabled="!latestAnalysisId" @click="startMigration">3. 正式迁移</el-button>
+        <el-button :loading="actionLoading" :disabled="!scopeReady" @click="startDryRun">2. 试运行</el-button>
+        <el-button type="danger" plain :loading="actionLoading" :disabled="!scopeReady" @click="startMigration">3. 正式迁移</el-button>
         <span class="action-hint">建议先处理 ERROR 问题，再执行正式迁移。</span>
       </div>
+    </section>
+
+    <section v-if="latestAnalysisId" class="panel scope-panel">
+      <div class="section-title">
+        <div><h2>迁移范围</h2><span>默认全选，可按项目或工作流取消；Task / DAG / Schedule 会自动跟随工作流范围</span></div>
+        <div class="scope-actions">
+          <el-button size="small" @click="selectAllScope">全选</el-button>
+          <el-button size="small" @click="selectOnlineScope">只选已上线</el-button>
+          <el-button size="small" @click="clearScope">清空</el-button>
+        </div>
+      </div>
+      <div class="scope-summary">
+        <span>分析 Run #{{ latestAnalysisId }}</span>
+        <strong>已选 {{ selectedWorkflowCount }} / {{ migrationScope.workflowCount || 0 }} 个工作流</strong>
+        <span>项目 {{ migrationScope.projectCount || 0 }} 个 · 任务引用 {{ migrationScope.taskCount || 0 }} 个</span>
+      </div>
+      <el-skeleton v-if="scopeLoading" :rows="3" animated />
+      <el-tree v-else ref="scopeTreeRef" class="scope-tree" :data="scopeTreeData" show-checkbox
+               node-key="id" default-expand-all :props="{ children: 'children', label: 'label' }" @check="updateScopeSelection">
+        <template #default="{ data }">
+          <div class="scope-node">
+            <div>
+              <strong>{{ data.label }}</strong>
+              <span v-if="data.kind === 'PROJECT'">{{ data.workflowCount }} 个工作流 · {{ data.taskCount }} 个任务引用</span>
+              <span v-else>{{ data.taskCount }} 个任务 · {{ (data.taskTypes || []).join(' / ') || '无任务' }}</span>
+            </div>
+            <el-tag v-if="data.kind === 'WORKFLOW'" size="small" :type="data.online ? 'success' : 'info'">{{ data.online ? '已上线' : '未上线' }}</el-tag>
+          </div>
+        </template>
+      </el-tree>
     </section>
 
     <section v-if="selectedRun" class="panel progress-panel">
@@ -135,7 +165,7 @@
 
 <script setup>
 import axios from 'axios'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const settings = ref({ sourceJdbcUrl: '', sourceUsername: '', sourcePassword: '', targetBaseUrl: '', targetToken: '', targetOperator: '' })
@@ -150,12 +180,24 @@ const saveLoading = ref(false)
 const testSourceLoading = ref(false)
 const testTargetLoading = ref(false)
 const actionLoading = ref(false)
+const migrationScope = ref({ projectCount: 0, workflowCount: 0, taskCount: 0, projects: [] })
+const scopeTreeRef = ref(null)
+const scopeLoading = ref(false)
+const scopeAnalysisId = ref(null)
+const selectedWorkflowCount = ref(0)
 let timer
 
 const latestAnalysisId = computed(() => {
   const run = runs.value.find(r => r.operation === 'ANALYZE' && String(r.status).startsWith('COMPLETED'))
   return run?.id || null
 })
+
+const scopeTreeData = computed(() => (migrationScope.value.projects || []).map(p => ({
+  id: `P:${p.projectCode}`, kind: 'PROJECT', label: p.projectName, workflowCount: p.workflowCount, taskCount: p.taskCount,
+  children: (p.workflows || []).map(w => ({ id: `W:${w.workflowCode}`, kind: 'WORKFLOW', label: w.workflowName,
+    workflowCode: w.workflowCode, online: w.online, taskCount: w.taskCount, taskTypes: w.taskTypes }))
+})))
+const scopeReady = computed(() => !!latestAnalysisId.value && scopeAnalysisId.value === latestAnalysisId.value && selectedWorkflowCount.value > 0)
 
 const isRunning = run => ['QUEUED', 'RUNNING'].includes(run?.status)
 const statusType = status => {
@@ -195,7 +237,41 @@ async function loadRuns() {
   const { data } = await axios.get('/api/runs')
   runs.value = data
   if (!selectedRun.value && data.length) await selectRun(data[0])
+  await ensureScope()
 }
+
+async function ensureScope() {
+  const analysisId = latestAnalysisId.value
+  if (!analysisId || scopeAnalysisId.value === analysisId || scopeLoading.value) return
+  scopeLoading.value = true
+  try {
+    const { data } = await axios.get('/api/scope')
+    migrationScope.value = data
+    scopeAnalysisId.value = analysisId
+    await nextTick()
+    selectAllScope()
+  } catch (e) { showError(e) } finally { scopeLoading.value = false }
+}
+function workflowLeafIds(predicate = () => true) {
+  return scopeTreeData.value.flatMap(p => p.children || []).filter(predicate).map(w => w.id)
+}
+function selectAllScope() {
+  scopeTreeRef.value?.setCheckedKeys(workflowLeafIds())
+  updateScopeSelection()
+}
+function selectOnlineScope() {
+  scopeTreeRef.value?.setCheckedKeys(workflowLeafIds(w => w.online))
+  updateScopeSelection()
+}
+function clearScope() {
+  scopeTreeRef.value?.setCheckedKeys([])
+  updateScopeSelection()
+}
+function selectedWorkflowCodes() {
+  const keys = scopeTreeRef.value?.getCheckedKeys(true) || []
+  return keys.filter(k => String(k).startsWith('W:')).map(k => Number(String(k).slice(2))).filter(Number.isFinite)
+}
+function updateScopeSelection() { selectedWorkflowCount.value = selectedWorkflowCodes().length }
 
 async function selectRun(run) {
   selectedRun.value = run
@@ -229,14 +305,16 @@ async function startAnalyze() {
 }
 async function startDryRun() { await startMigrate(true) }
 async function startMigration() {
-  await ElMessageBox.confirm('正式迁移会在 DataSphere 创建目录、开发文件、工作流和 disabled 调度。不会自动发布/上线。是否继续？', '确认正式迁移', { type: 'warning' })
+  await ElMessageBox.confirm(`将迁移已选择的 ${selectedWorkflowCount.value} 个工作流，并在 DataSphere 创建对应目录、开发文件、工作流和 disabled 调度。不会自动发布/上线。是否继续？`, '确认正式迁移', { type: 'warning' })
   await startMigrate(false)
 }
 
 async function startMigrate(dryRun) {
   actionLoading.value = true
   try {
-    const { data } = await axios.post('/api/runs/migrate', { analysisRunId: latestAnalysisId.value, dryRun })
+    const workflowCodes = selectedWorkflowCodes()
+    if (!workflowCodes.length) { ElMessage.warning('至少选择一个工作流'); return }
+    const { data } = await axios.post('/api/runs/migrate', { analysisRunId: latestAnalysisId.value, dryRun, migrateAll: false, workflowCodes })
     ElMessage.success(data.message)
     await loadRuns(); const run = runs.value.find(r => r.id === data.runId); if (run) await selectRun(run)
   } catch (e) { if (e !== 'cancel') showError(e) } finally { actionLoading.value = false }

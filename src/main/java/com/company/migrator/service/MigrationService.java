@@ -62,8 +62,11 @@ public class MigrationService {
             }
         }
         boolean dryRun = request == null || request.dryRunValue();
+        boolean migrateAll = request == null || request.migrateAllValue();
+        Set<Long> workflowCodes = request == null ? Set.of() : new LinkedHashSet<>(request.workflowCodesValue());
+        if (!migrateAll && workflowCodes.isEmpty()) throw new IllegalArgumentException("至少选择一个工作流");
         long runId = createRun("MIGRATE", dryRun, "QUEUED", "WAITING", dryRun ? "等待试运行" : "等待迁移");
-        executor.submit(() -> migrate(runId, dryRun));
+        executor.submit(() -> migrate(runId, dryRun, migrateAll, workflowCodes));
         return runId;
     }
 
@@ -233,7 +236,34 @@ public class MigrationService {
         };
     }
 
-    private void migrate(long runId, boolean dryRun) {
+    public MigrationScopeView migrationScope() {
+        try {
+            Snapshot snapshot = source.read(settings.get());
+            Map<Long, List<TaskRow>> tasksByWorkflow = snapshot.tasks().stream()
+                    .collect(Collectors.groupingBy(TaskRow::workflowCode, LinkedHashMap::new, Collectors.toList()));
+            List<ProjectScopeView> projects = new ArrayList<>();
+            for (ProjectRow project : snapshot.projects()) {
+                List<WorkflowScopeView> workflows = snapshot.workflows().stream()
+                        .filter(w -> w.projectCode() == project.code())
+                        .map(w -> {
+                            List<TaskRow> rows = tasksByWorkflow.getOrDefault(w.code(), List.of()).stream()
+                                    .filter(t -> t.workflowVersion() == w.version()).toList();
+                            List<String> types = rows.stream().map(t -> normalizeType(t.taskType())).distinct().sorted().toList();
+                            long distinctTasks = rows.stream().map(t -> taskKey(t.code(), t.version())).distinct().count();
+                            return new WorkflowScopeView(w.code(), w.version(), w.name(), w.releaseState() == 1, (int) distinctTasks, types);
+                        }).toList();
+                int taskCount = workflows.stream().mapToInt(WorkflowScopeView::taskCount).sum();
+                projects.add(new ProjectScopeView(project.code(), project.name(), workflows.size(), taskCount, workflows));
+            }
+            int workflowCount = projects.stream().mapToInt(ProjectScopeView::workflowCount).sum();
+            int taskCount = projects.stream().mapToInt(ProjectScopeView::taskCount).sum();
+            return new MigrationScopeView(projects.size(), workflowCount, taskCount, projects);
+        } catch (Exception ex) {
+            throw new IllegalStateException("读取迁移范围失败：" + rootMessage(ex), ex);
+        }
+    }
+
+    private void migrate(long runId, boolean dryRun, boolean migrateAll, Set<Long> workflowCodes) {
         try {
             startRun(runId, "CONNECT", dryRun ? "执行迁移试运行" : "连接源端与 DataSphere");
             Settings s = settings.get();
@@ -242,6 +272,9 @@ public class MigrationService {
             DataSphereClient.TargetCheck targetCheck = target.test(s);
             if (!targetCheck.success()) throw new IllegalStateException(targetCheck.message());
             Snapshot snapshot = source.read(s);
+            snapshot = filterSnapshot(snapshot, migrateAll, workflowCodes);
+            if (snapshot.workflows().isEmpty()) throw new IllegalStateException("选择范围内没有可迁移工作流");
+            event(runId, "INFO", "SCOPE", migrateAll ? "迁移范围：全部工作流" : "迁移范围：已选择 " + snapshot.workflows().size() + " 个工作流");
             if (dryRun) {
                 dryRun(runId, snapshot);
                 return;
@@ -253,6 +286,20 @@ public class MigrationService {
         } catch (Exception ex) {
             failRun(runId, ex);
         }
+    }
+
+
+    private Snapshot filterSnapshot(Snapshot snapshot, boolean migrateAll, Set<Long> workflowCodes) {
+        if (migrateAll) return snapshot;
+        Set<Long> selected = new LinkedHashSet<>(workflowCodes);
+        List<WorkflowRow> workflows = snapshot.workflows().stream().filter(w -> selected.contains(w.code())).toList();
+        Set<Long> projectCodes = workflows.stream().map(WorkflowRow::projectCode).collect(Collectors.toCollection(LinkedHashSet::new));
+        List<ProjectRow> projects = snapshot.projects().stream().filter(p -> projectCodes.contains(p.code())).toList();
+        Set<String> workflowVersions = workflows.stream().map(w -> w.code() + ":" + w.version()).collect(Collectors.toSet());
+        List<TaskRow> tasks = snapshot.tasks().stream().filter(t -> workflowVersions.contains(t.workflowCode() + ":" + t.workflowVersion())).toList();
+        List<EdgeRow> edges = snapshot.edges().stream().filter(e -> workflowVersions.contains(e.workflowCode() + ":" + e.workflowVersion())).toList();
+        List<ScheduleRow> schedules = snapshot.schedules().stream().filter(sc -> selected.contains(sc.workflowCode())).toList();
+        return new Snapshot(projects, workflows, tasks, edges, schedules);
     }
 
     private void dryRun(long runId, Snapshot snapshot) {

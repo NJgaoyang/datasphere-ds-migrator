@@ -49,3 +49,13 @@ button, input { font: inherit; }
   .page-shell { width: calc(100% - 28px); }
   .content-grid { grid-template-columns: 42% 1fr; }
 }
+
+.scope-panel { margin-bottom: 16px; padding: 18px 20px; }
+.scope-actions { display: flex; gap: 8px; }
+.scope-summary { display: flex; align-items: center; gap: 18px; padding: 10px 12px; margin-bottom: 12px; background: #fafbfc; border: 1px solid #edf0f4; border-radius: 8px; font-size: 12px; color: #6f7788; }
+.scope-summary strong { color: #2e3a55; }
+.scope-tree { max-height: 360px; overflow: auto; padding: 6px 4px; border: 1px solid #edf0f4; border-radius: 10px; }
+.scope-node { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-right: 10px; }
+.scope-node > div { display: flex; align-items: center; gap: 12px; }
+.scope-node strong { font-size: 13px; }
+.scope-node span { color: #8a91a2; font-size: 12px; }

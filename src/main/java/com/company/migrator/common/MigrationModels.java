@@ -1,6 +1,7 @@
 package com.company.migrator.common;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 public final class MigrationModels {
     private MigrationModels() { }
@@ -19,9 +20,15 @@ public final class MigrationModels {
 
     public record ConnectionTest(boolean success, String message, String version) { }
 
-    public record StartMigrationRequest(Long analysisRunId, Boolean dryRun) {
+    public record StartMigrationRequest(Long analysisRunId, Boolean dryRun, Boolean migrateAll, List<Long> workflowCodes) {
         public boolean dryRunValue() { return dryRun == null || dryRun; }
+        public boolean migrateAllValue() { return migrateAll == null ? workflowCodes == null : migrateAll; }
+        public List<Long> workflowCodesValue() { return workflowCodes == null ? List.of() : workflowCodes; }
     }
+
+    public record MigrationScopeView(int projectCount, int workflowCount, int taskCount, List<ProjectScopeView> projects) { }
+    public record ProjectScopeView(long projectCode, String projectName, int workflowCount, int taskCount, List<WorkflowScopeView> workflows) { }
+    public record WorkflowScopeView(long workflowCode, int workflowVersion, String workflowName, boolean online, int taskCount, List<String> taskTypes) { }
 
     public record RunView(
             long id, String operation, String status, String phase, int progress,

@@ -43,6 +43,9 @@ public class MigrationConsoleController {
         return new ConnectionTest(r.success(), r.message(), r.detail());
     }
 
+    @GetMapping("/scope")
+    public MigrationScopeView scope() { return migrations.migrationScope(); }
+
     @GetMapping("/runs")
     public List<RunView> runs() { return migrations.listRuns(); }
 
