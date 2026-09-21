@@ -20,11 +20,15 @@ import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
 public class MigrationService {
     private static final Set<String> AUTO_TASK_TYPES = Set.of("SQL", "SHELL", "PYTHON", "SEATUNNEL");
+    private static final Pattern SQL_SOURCE_TABLE = Pattern.compile("(?i)\\b(?:FROM|JOIN)\\s+([`\"A-Za-z0-9_$.]+)");
+    private static final Pattern SQL_TARGET_TABLE = Pattern.compile("(?i)\\b(?:INSERT\\s+INTO|REPLACE\\s+INTO|MERGE\\s+INTO|CREATE\\s+TABLE(?:\\s+IF\\s+NOT\\s+EXISTS)?)\\s+([`\"A-Za-z0-9_$.]+)");
 
     private final JdbcTemplate jdbc;
     private final SettingService settings;
@@ -272,9 +276,18 @@ public class MigrationService {
             DataSphereClient.TargetCheck targetCheck = target.test(s);
             if (!targetCheck.success()) throw new IllegalStateException(targetCheck.message());
             Snapshot snapshot = source.read(s);
-            snapshot = filterSnapshot(snapshot, migrateAll, workflowCodes);
+            int requestedWorkflowCount = workflowCodes.size();
+            int autoIncludedUpstreams = 0;
+            Set<Long> effectiveWorkflowCodes = workflowCodes;
+            if (!migrateAll) {
+                effectiveWorkflowCodes = expandSqlUpstreamWorkflowCodes(snapshot, workflowCodes);
+                autoIncludedUpstreams = Math.max(0, effectiveWorkflowCodes.size() - requestedWorkflowCount);
+            }
+            snapshot = filterSnapshot(snapshot, migrateAll, effectiveWorkflowCodes);
             if (snapshot.workflows().isEmpty()) throw new IllegalStateException("选择范围内没有可迁移工作流");
-            event(runId, "INFO", "SCOPE", migrateAll ? "迁移范围：全部工作流" : "迁移范围：已选择 " + snapshot.workflows().size() + " 个工作流");
+            event(runId, "INFO", "SCOPE", migrateAll
+                    ? "迁移范围：全部工作流"
+                    : "迁移范围：手工选择 " + requestedWorkflowCount + " 个，自动包含 SQL 上游 " + autoIncludedUpstreams + " 个，共 " + snapshot.workflows().size() + " 个工作流");
             if (dryRun) {
                 dryRun(runId, snapshot);
                 return;
@@ -288,6 +301,71 @@ public class MigrationService {
         }
     }
 
+
+    private Set<Long> expandSqlUpstreamWorkflowCodes(Snapshot snapshot, Set<Long> requestedWorkflowCodes) {
+        LinkedHashSet<Long> expanded = new LinkedHashSet<>(requestedWorkflowCodes);
+        Map<Long, WorkflowRow> workflowsByCode = snapshot.workflows().stream()
+                .collect(Collectors.toMap(WorkflowRow::code, Function.identity(), (a, b) -> a, LinkedHashMap::new));
+        Map<String, LinkedHashSet<Long>> producersByTable = new LinkedHashMap<>();
+        for (WorkflowRow workflow : snapshot.workflows()) {
+            for (TaskRow task : workflowTasks(workflow, snapshot.tasks())) {
+                if (!"SQL".equals(normalizeType(task.taskType()))) continue;
+                Set<String> targets = targetTableLeaves(taskSql(task));
+                if (targets.isEmpty()) {
+                    String workflowName = tableLeaf(workflow.name());
+                    String taskName = tableLeaf(task.name());
+                    if (!workflowName.isBlank()) targets.add(workflowName);
+                    if (!taskName.isBlank()) targets.add(taskName);
+                }
+                for (String targetTable : targets)
+                    producersByTable.computeIfAbsent(targetTable, ignored -> new LinkedHashSet<>()).add(workflow.code());
+            }
+        }
+        Deque<Long> queue = new ArrayDeque<>(expanded);
+        while (!queue.isEmpty()) {
+            Long workflowCode = queue.removeFirst();
+            WorkflowRow workflow = workflowsByCode.get(workflowCode);
+            if (workflow == null) continue;
+            for (TaskRow task : workflowTasks(workflow, snapshot.tasks())) {
+                if (!"SQL".equals(normalizeType(task.taskType()))) continue;
+                for (String sourceTable : sourceTableLeaves(taskSql(task))) {
+                    for (Long upstreamWorkflowCode : producersByTable.getOrDefault(sourceTable, new LinkedHashSet<>())) {
+                        if (!upstreamWorkflowCode.equals(workflowCode) && expanded.add(upstreamWorkflowCode)) queue.addLast(upstreamWorkflowCode);
+                    }
+                }
+            }
+        }
+        return expanded;
+    }
+
+    private String taskSql(TaskRow task) {
+        return source.parseTaskParams(task).path("sql").asText("");
+    }
+
+    private Set<String> sourceTableLeaves(String sql) { return tableLeaves(sql, SQL_SOURCE_TABLE); }
+    private Set<String> targetTableLeaves(String sql) { return tableLeaves(sql, SQL_TARGET_TABLE); }
+
+    private Set<String> tableLeaves(String sql, Pattern pattern) {
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        Matcher matcher = pattern.matcher(stripSqlComments(sql));
+        while (matcher.find()) {
+            String leaf = tableLeaf(matcher.group(1));
+            if (!leaf.isBlank()) result.add(leaf);
+        }
+        return result;
+    }
+
+    private String stripSqlComments(String sql) {
+        if (sql == null || sql.isBlank()) return "";
+        return sql.replaceAll("(?s)/\\*.*?\\*/", " ").replaceAll("(?m)--.*$", " ");
+    }
+
+    private String tableLeaf(String tableRef) {
+        if (tableRef == null) return "";
+        String normalized = tableRef.replace("`", "").replace("\"", "").trim().toLowerCase(Locale.ROOT);
+        int dot = normalized.lastIndexOf('.');
+        return dot >= 0 ? normalized.substring(dot + 1) : normalized;
+    }
 
     private Snapshot filterSnapshot(Snapshot snapshot, boolean migrateAll, Set<Long> workflowCodes) {
         if (migrateAll) return snapshot;
@@ -395,12 +473,18 @@ public class MigrationService {
                 Long fileId = fileByTask.get(taskKey(t.code(), t.version()));
                 if (fileId == null) continue;
                 List<Map<String, String>> localParams = mergedParams(w, t);
-                List<Long> upstreams = upstreamFileIds(w, t, snapshot.edges(), fileByTask);
+                List<Long> explicitUpstreams = upstreamFileIds(w, t, snapshot.edges(), fileByTask);
+                AutoUpstreamResolution auto = autoDetectedUpstreams(s, fileId);
+                LinkedHashSet<Long> mergedUpstreams = new LinkedHashSet<>(explicitUpstreams);
+                auto.fileIds().stream().filter(id -> id != fileId).forEach(mergedUpstreams::add);
+                List<Long> upstreams = new ArrayList<>(mergedUpstreams);
                 target.saveDevelopmentSchedule(s, fileId, display.cycleType(), display.executionTime(),
                         schedule.crontab(), schedule.timezone(), businessDateParam(localParams), localParams,
                         t.retryTimes(), t.retryIntervalMinutes(), upstreams);
                 event(runId, "INFO", "MIGRATE_TASK_SCHEDULE", t.name() + " · " + schedule.crontab() +
-                        " · 参数=" + localParams.size() + " · 上游=" + upstreams.size());
+                        " · 参数=" + localParams.size() + " · 上游=" + upstreams.size() +
+                        "（DAG=" + explicitUpstreams.size() + "，SQL血缘=" + auto.fileIds().size() +
+                        "，未匹配表=" + auto.unmatchedTables().size() + "）");
             }
         }
 
@@ -596,6 +680,24 @@ public class MigrationService {
         }
         return new ArrayList<>(result);
     }
+
+    private AutoUpstreamResolution autoDetectedUpstreams(Settings settings, long fileId) {
+        JsonNode result = target.autoUpstreams(settings, fileId);
+        LinkedHashSet<Long> fileIds = new LinkedHashSet<>();
+        JsonNode matches = result.path("matches");
+        if (matches.isArray()) {
+            for (JsonNode match : matches) {
+                long upstreamFileId = match.path("fileId").asLong(0);
+                if (upstreamFileId > 0 && upstreamFileId != fileId) fileIds.add(upstreamFileId);
+            }
+        }
+        List<String> unmatched = new ArrayList<>();
+        JsonNode unmatchedTables = result.path("unmatchedTables");
+        if (unmatchedTables.isArray()) unmatchedTables.forEach(node -> unmatched.add(node.asText()));
+        return new AutoUpstreamResolution(new ArrayList<>(fileIds), unmatched);
+    }
+
+    private record AutoUpstreamResolution(List<Long> fileIds, List<String> unmatchedTables) { }
 
     private List<Map<String, String>> mergedParams(WorkflowRow workflow, TaskRow task) {
         LinkedHashMap<String, String> values = new LinkedHashMap<>();

@@ -123,6 +123,10 @@ public class DataSphereClient {
         data(put(settings, "/api/files/" + fileId + "/schedule", payload));
     }
 
+    public JsonNode autoUpstreams(Settings settings, long fileId) {
+        return data(get(settings, "/api/files/" + fileId + "/schedule/auto-upstreams"));
+    }
+
     public JsonNode validateWorkflow(Settings settings, long workflowId) {
         return data(post(settings, "/api/workflows/" + workflowId + "/validate", Map.of()));
     }
