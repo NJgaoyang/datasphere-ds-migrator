@@ -41,7 +41,9 @@ public class DataSphereClient {
         JsonNode folders = data(get(settings, "/api/folders?projectId=" + projectId));
         if (folders.isArray()) {
             for (JsonNode folder : folders) {
-                if (folder.path("parentId").isNull() && name.equals(folder.path("name").asText())) return folder.path("id").asLong();
+                JsonNode parentId = folder.get("parentId");
+                boolean root = parentId == null || parentId.isNull() || parentId.asLong(0) == 0;
+                if (root && name.equalsIgnoreCase(folder.path("name").asText())) return folder.path("id").asLong();
             }
         }
         Map<String, Object> payload = new LinkedHashMap<>();
