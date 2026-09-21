@@ -328,7 +328,10 @@ public class MigrationService {
             if (workflow == null) continue;
             for (TaskRow task : workflowTasks(workflow, snapshot.tasks())) {
                 if (!"SQL".equals(normalizeType(task.taskType()))) continue;
-                for (String sourceTable : sourceTableLeaves(taskSql(task))) {
+                String sql = taskSql(task);
+                Set<String> sourceTables = sourceTableLeaves(sql);
+                sourceTables.removeAll(targetTableLeaves(sql));
+                for (String sourceTable : sourceTables) {
                     for (Long upstreamWorkflowCode : producersByTable.getOrDefault(sourceTable, new LinkedHashSet<>())) {
                         if (!upstreamWorkflowCode.equals(workflowCode) && expanded.add(upstreamWorkflowCode)) queue.addLast(upstreamWorkflowCode);
                     }
