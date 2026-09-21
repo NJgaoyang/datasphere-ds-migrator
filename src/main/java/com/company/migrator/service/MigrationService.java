@@ -319,10 +319,16 @@ public class MigrationService {
             inspectTaskIssues(runId, itemId, t, type, auto);
             progress(runId, ++processed, total, "DRY_RUN", t.name());
         }
+        Map<String, Long> taskWorkflowUseCounts = taskWorkflowUseCounts(snapshot.tasks());
         for (WorkflowRow w : snapshot.workflows()) {
             boolean supported = workflowSupported(w, snapshot.tasks());
+            List<TaskRow> workflowTasks = workflowTasks(w, snapshot.tasks());
+            boolean developmentOnly = isSingleDevelopmentWorkflow(workflowTasks, taskWorkflowUseCounts);
+            String message = !supported ? "包含暂不支持的任务类型"
+                    : developmentOnly ? "单节点 SQL 流程将直接映射为数据开发任务流，不再创建重复编排工作流"
+                    : "将创建/复用编排工作流并保持 Offline";
             insertItem(runId, "WORKFLOW", String.valueOf(w.code()), w.version(), w.name(), null,
-                    supported ? "DRY_RUN_OK" : "BLOCKED", supported ? "将创建/复用工作流并保持 Offline" : "包含暂不支持的任务类型", json(w));
+                    supported ? "DRY_RUN_OK" : "BLOCKED", message, json(w));
             progress(runId, ++processed, total, "DRY_RUN", w.name());
         }
         for (ScheduleRow s : snapshot.schedules()) {
@@ -399,11 +405,46 @@ public class MigrationService {
         }
 
         Map<Long, Long> workflowTargetIds = new LinkedHashMap<>();
+        Map<Long, Long> developmentWorkflowFileIds = new LinkedHashMap<>();
+        Map<String, Long> taskWorkflowUseCounts = taskWorkflowUseCounts(snapshot.tasks());
         for (WorkflowRow w : snapshot.workflows()) {
             checkCancelled(runId);
             long itemId = insertItem(runId, "WORKFLOW", String.valueOf(w.code()), w.version(), w.name(), null, "RUNNING", "创建工作流", json(w));
             if (!workflowSupported(w, snapshot.tasks())) {
                 finishItem(itemId, "BLOCKED", null, null, "包含暂不支持的任务，未创建工作流");
+                progress(runId, ++processed, total, "MIGRATE_WORKFLOW", w.name());
+                continue;
+            }
+            List<TaskRow> workflowTasks = workflowTasks(w, snapshot.tasks());
+            if (isSingleDevelopmentWorkflow(workflowTasks, taskWorkflowUseCounts)) {
+                TaskRow onlyTask = workflowTasks.getFirst();
+                Long fileId = fileByTask.get(taskKey(onlyTask.code(), onlyTask.version()));
+                if (fileId == null) {
+                    finishItem(itemId, "BLOCKED", null, null, "单节点开发任务未成功迁移，无法建立任务流映射");
+                    progress(runId, ++processed, total, "MIGRATE_WORKFLOW", w.name());
+                    continue;
+                }
+                Long oldWorkflowId = mappedId("WORKFLOW", String.valueOf(w.code()), w.version(), "WORKFLOW");
+                if (oldWorkflowId != null) {
+                    if (!target.workflowExists(s, oldWorkflowId)) {
+                        deleteMap("WORKFLOW", String.valueOf(w.code()), w.version(), "WORKFLOW");
+                    } else {
+                        String status = target.workflowStatus(s, oldWorkflowId);
+                        if ("DRAFT".equalsIgnoreCase(status)) {
+                            target.deleteWorkflow(s, oldWorkflowId);
+                            deleteMap("WORKFLOW", String.valueOf(w.code()), w.version(), "WORKFLOW");
+                            event(runId, "INFO", "CLEAN_DUPLICATE_WORKFLOW", w.name() + " · 已清理旧的单节点草稿编排工作流 #" + oldWorkflowId);
+                        } else {
+                            issue(runId, itemId, "WARN", "SINGLE_NODE_WORKFLOW_ALREADY_PUBLISHED", "WORKFLOW",
+                                    String.valueOf(w.code()), w.name(), "旧的单节点编排工作流已不是草稿，未自动删除",
+                                    "目标 Workflow #" + oldWorkflowId + " 状态=" + status + "，请确认后人工清理。数据开发任务流已作为后续迁移目标。");
+                        }
+                    }
+                }
+                developmentWorkflowFileIds.put(w.code(), fileId);
+                saveMap("WORKFLOW", String.valueOf(w.code()), w.version(), "DEV_FILE", String.valueOf(fileId), w.name());
+                finishItem(itemId, "SUCCESS", "DEV_FILE", String.valueOf(fileId),
+                        "单节点 SQL 流程已映射为数据开发任务流，不创建重复编排工作流");
                 progress(runId, ++processed, total, "MIGRATE_WORKFLOW", w.name());
                 continue;
             }
@@ -430,14 +471,18 @@ public class MigrationService {
             long itemId = insertItem(runId, "SCHEDULE", String.valueOf(schedule.id()), 0,
                     "Schedule → " + schedule.workflowCode(), null, "RUNNING", "保存调度配置", json(schedule));
             Long workflowId = workflowTargetIds.get(schedule.workflowCode());
+            Long developmentFileId = developmentWorkflowFileIds.get(schedule.workflowCode());
             ScheduleRow selected = scheduleByWorkflow.get(schedule.workflowCode());
-            if (workflowId == null) {
-                finishItem(itemId, "BLOCKED", null, null, "对应工作流未迁移，跳过调度");
-            } else if (selected == null || selected.id() != schedule.id()) {
+            if (selected == null || selected.id() != schedule.id()) {
                 finishItem(itemId, "SKIPPED", null, null, "同一工作流存在多条调度，已优先选择已发布且较新的调度");
                 issue(runId, itemId, "WARN", "MULTIPLE_SCHEDULES", "SCHEDULE", String.valueOf(schedule.id()),
                         "Schedule → " + schedule.workflowCode(), "检测到同一工作流多条调度",
                         "已优先迁移 release_state=1 且 ID 较新的调度，请人工确认其余调度。");
+            } else if (developmentFileId != null) {
+                finishItem(itemId, "SUCCESS", "DEV_FILE_SCHEDULE", String.valueOf(developmentFileId),
+                        "单节点 SQL 流程调度已保存到数据开发任务，保持 disabled");
+            } else if (workflowId == null) {
+                finishItem(itemId, "BLOCKED", null, null, "对应工作流未迁移，跳过调度");
             } else {
                 target.saveSchedule(s, workflowId, schedule.crontab(), schedule.timezone(), schedule.failureStrategy(), schedule.workerGroup());
                 finishItem(itemId, "SUCCESS", "WORKFLOW_SCHEDULE", String.valueOf(workflowId),
@@ -515,6 +560,18 @@ public class MigrationService {
 
     private List<TaskRow> workflowTasks(WorkflowRow workflow, List<TaskRow> tasks) {
         return tasks.stream().filter(t -> t.workflowCode() == workflow.code() && t.workflowVersion() == workflow.version()).toList();
+    }
+
+    private Map<String, Long> taskWorkflowUseCounts(List<TaskRow> tasks) {
+        return tasks.stream().collect(Collectors.groupingBy(
+                t -> taskKey(t.code(), t.version()), LinkedHashMap::new, Collectors.counting()));
+    }
+
+    private boolean isSingleDevelopmentWorkflow(List<TaskRow> workflowTasks, Map<String, Long> taskWorkflowUseCounts) {
+        if (workflowTasks.size() != 1) return false;
+        TaskRow task = workflowTasks.getFirst();
+        return "SQL".equals(normalizeType(task.taskType()))
+                && taskWorkflowUseCounts.getOrDefault(taskKey(task.code(), task.version()), 0L) == 1L;
     }
 
     private Map<Long, ScheduleRow> primarySchedules(List<ScheduleRow> schedules) {
@@ -710,6 +767,11 @@ public class MigrationService {
         List<Long> ids = jdbc.query("SELECT target_id FROM migration_object_map WHERE source_type=? AND source_code=? AND source_version=? AND target_type=?",
                 (rs, n) -> Long.parseLong(rs.getString(1)), sourceType, sourceCode, sourceVersion, targetType);
         return ids.isEmpty() ? null : ids.get(0);
+    }
+
+    private void deleteMap(String sourceType, String sourceCode, int sourceVersion, String targetType) {
+        jdbc.update("DELETE FROM migration_object_map WHERE source_type=? AND source_code=? AND source_version=? AND target_type=?",
+                sourceType, sourceCode, sourceVersion, targetType);
     }
 
     private void saveMap(String sourceType, String sourceCode, int sourceVersion, String targetType, String targetId, String targetName) {

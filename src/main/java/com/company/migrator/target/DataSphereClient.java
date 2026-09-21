@@ -83,6 +83,15 @@ public class DataSphereClient {
         }
     }
 
+    public String workflowStatus(Settings settings, long workflowId) {
+        JsonNode row = data(get(settings, "/api/workflows/" + workflowId));
+        return row.path("status").asText("");
+    }
+
+    public void deleteWorkflow(Settings settings, long workflowId) {
+        request(settings).delete().uri("/api/workflows/" + workflowId).retrieve().toBodilessEntity();
+    }
+
     public void saveSchedule(Settings settings, long workflowId, String cron, String timezone, String failureStrategy, String workerGroup) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("cronExpression", cron);
