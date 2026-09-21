@@ -61,6 +61,28 @@ public class DataSphereClient {
         return data(post(settings, "/api/workflows", payload)).path("id").asLong();
     }
 
+    public void updateWorkflow(Settings settings, long workflowId, Map<String, Object> payload) {
+        data(put(settings, "/api/workflows/" + workflowId, payload));
+    }
+
+    public boolean fileExists(Settings settings, long fileId) {
+        try {
+            JsonNode row = data(get(settings, "/api/files/" + fileId));
+            return row.path("id").asLong(0) == fileId;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    public boolean workflowExists(Settings settings, long workflowId) {
+        try {
+            JsonNode row = data(get(settings, "/api/workflows/" + workflowId));
+            return row.path("id").asLong(0) == workflowId;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     public void saveSchedule(Settings settings, long workflowId, String cron, String timezone, String failureStrategy, String workerGroup) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("cronExpression", cron);
@@ -69,6 +91,27 @@ public class DataSphereClient {
         payload.put("parallelism", 1); payload.put("workerGroup", workerGroup == null || workerGroup.isBlank() ? "default" : workerGroup);
         payload.put("alertGroup", "");
         data(put(settings, "/api/scheduler/workflows/" + workflowId + "/schedule", payload));
+    }
+
+    public void saveDevelopmentSchedule(Settings settings, long fileId, String cycleType, String executionTime,
+                                        String cron, String timezone, String bizDateParam,
+                                        List<Map<String, String>> localParams, int retryTimes, int retryIntervalMinutes,
+                                        List<Long> upstreamFileIds) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("enabled", false);
+        payload.put("cycleType", cycleType == null || cycleType.isBlank() ? "CRON" : cycleType);
+        payload.put("executionTime", executionTime == null || executionTime.isBlank() ? "00:00" : executionTime);
+        payload.put("cronExpression", cron);
+        payload.put("timezone", timezone == null || timezone.isBlank() ? "Asia/Shanghai" : timezone);
+        payload.put("dataSourceId", null);
+        payload.put("databaseName", null);
+        payload.put("bizDateParam", bizDateParam == null || bizDateParam.isBlank() ? "${system.biz.date}" : bizDateParam);
+        payload.put("localParams", localParams == null ? List.of() : localParams);
+        payload.put("retryTimes", Math.max(0, Math.min(20, retryTimes)));
+        payload.put("retryIntervalMinutes", Math.max(1, Math.min(1440, retryIntervalMinutes)));
+        payload.put("timeoutMinutes", 60);
+        payload.put("upstreamFileIds", upstreamFileIds == null ? List.of() : upstreamFileIds);
+        data(put(settings, "/api/files/" + fileId + "/schedule", payload));
     }
 
     public JsonNode validateWorkflow(Settings settings, long workflowId) {
@@ -143,7 +186,7 @@ public class DataSphereClient {
     private String normalizeFailureStrategy(String value) {
         if (value == null || value.isBlank()) return "END";
         String v = value.trim().toUpperCase(Locale.ROOT);
-        return "CONTINUE".equals(v) || "1".equals(v) ? "CONTINUE" : "END";
+        return "CONTINUE".equals(v) || "0".equals(v) ? "CONTINUE" : "END";
     }
 
     private String rootMessage(Throwable ex) {

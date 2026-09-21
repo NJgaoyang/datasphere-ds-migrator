@@ -344,8 +344,7 @@ public class MigrationService {
         for (ProjectRow p : snapshot.projects()) {
             checkCancelled(runId);
             long itemId = insertItem(runId, "PROJECT", String.valueOf(p.code()), 0, p.name(), null, "RUNNING", "创建一级目录", json(p));
-            Long existing = mappedId("PROJECT", String.valueOf(p.code()), 0, "FOLDER");
-            long folderId = existing != null ? existing : target.ensureTopFolder(s, projectId, p.name());
+            long folderId = target.ensureTopFolder(s, projectId, p.name());
             folderByProject.put(p.code(), folderId);
             saveMap("PROJECT", String.valueOf(p.code()), 0, "FOLDER", String.valueOf(folderId), p.name());
             finishItem(itemId, "SUCCESS", "FOLDER", String.valueOf(folderId), "目录已准备");
@@ -366,6 +365,7 @@ public class MigrationService {
             }
             long itemId = insertItem(runId, "TASK", String.valueOf(t.code()), t.version(), t.name(), type, "RUNNING", "创建开发文件", json(t));
             Long existing = mappedId("TASK", String.valueOf(t.code()), t.version(), "DEV_FILE");
+            if (existing != null && !target.fileExists(s, existing)) existing = null;
             long fileId;
             if (existing != null) {
                 fileId = existing;
@@ -379,6 +379,25 @@ public class MigrationService {
             progress(runId, ++processed, total, "MIGRATE_TASK", t.name());
         }
 
+        Map<Long, ScheduleRow> scheduleByWorkflow = primarySchedules(snapshot.schedules());
+        for (WorkflowRow w : snapshot.workflows()) {
+            ScheduleRow schedule = scheduleByWorkflow.get(w.code());
+            if (schedule == null) continue;
+            CronDisplay display = cronDisplay(schedule.crontab());
+            for (TaskRow t : workflowTasks(w, snapshot.tasks())) {
+                if (!"SQL".equals(normalizeType(t.taskType()))) continue;
+                Long fileId = fileByTask.get(taskKey(t.code(), t.version()));
+                if (fileId == null) continue;
+                List<Map<String, String>> localParams = mergedParams(w, t);
+                List<Long> upstreams = upstreamFileIds(w, t, snapshot.edges(), fileByTask);
+                target.saveDevelopmentSchedule(s, fileId, display.cycleType(), display.executionTime(),
+                        schedule.crontab(), schedule.timezone(), businessDateParam(localParams), localParams,
+                        t.retryTimes(), t.retryIntervalMinutes(), upstreams);
+                event(runId, "INFO", "MIGRATE_TASK_SCHEDULE", t.name() + " · " + schedule.crontab() +
+                        " · 参数=" + localParams.size() + " · 上游=" + upstreams.size());
+            }
+        }
+
         Map<Long, Long> workflowTargetIds = new LinkedHashMap<>();
         for (WorkflowRow w : snapshot.workflows()) {
             checkCancelled(runId);
@@ -389,14 +408,16 @@ public class MigrationService {
                 continue;
             }
             Long existing = mappedId("WORKFLOW", String.valueOf(w.code()), w.version(), "WORKFLOW");
+            if (existing != null && !target.workflowExists(s, existing)) existing = null;
+            Map<String, Object> payload = workflowPayload(w, snapshot, fileByTask);
             long workflowId;
             if (existing != null) {
                 workflowId = existing;
+                target.updateWorkflow(s, workflowId, payload);
             } else {
-                Map<String, Object> payload = workflowPayload(w, snapshot, fileByTask);
                 workflowId = target.createWorkflow(s, payload);
-                saveMap("WORKFLOW", String.valueOf(w.code()), w.version(), "WORKFLOW", String.valueOf(workflowId), w.name());
             }
+            saveMap("WORKFLOW", String.valueOf(w.code()), w.version(), "WORKFLOW", String.valueOf(workflowId), w.name());
             workflowTargetIds.put(w.code(), workflowId);
             JsonNode validation = target.validateWorkflow(s, workflowId);
             finishItem(itemId, "SUCCESS", "WORKFLOW", String.valueOf(workflowId),
@@ -404,21 +425,23 @@ public class MigrationService {
             progress(runId, ++processed, total, "MIGRATE_WORKFLOW", w.name());
         }
 
-        Set<Long> scheduled = new HashSet<>();
         for (ScheduleRow schedule : snapshot.schedules()) {
             checkCancelled(runId);
             long itemId = insertItem(runId, "SCHEDULE", String.valueOf(schedule.id()), 0,
                     "Schedule → " + schedule.workflowCode(), null, "RUNNING", "保存调度配置", json(schedule));
             Long workflowId = workflowTargetIds.get(schedule.workflowCode());
+            ScheduleRow selected = scheduleByWorkflow.get(schedule.workflowCode());
             if (workflowId == null) {
                 finishItem(itemId, "BLOCKED", null, null, "对应工作流未迁移，跳过调度");
-            } else if (!scheduled.add(schedule.workflowCode())) {
-                finishItem(itemId, "SKIPPED", null, null, "同一工作流已有一条调度，当前版本不重复覆盖");
+            } else if (selected == null || selected.id() != schedule.id()) {
+                finishItem(itemId, "SKIPPED", null, null, "同一工作流存在多条调度，已优先选择已发布且较新的调度");
                 issue(runId, itemId, "WARN", "MULTIPLE_SCHEDULES", "SCHEDULE", String.valueOf(schedule.id()),
-                        "Schedule → " + schedule.workflowCode(), "检测到同一工作流多条调度", "仅迁移第一条，请在页面人工确认其余调度。");
+                        "Schedule → " + schedule.workflowCode(), "检测到同一工作流多条调度",
+                        "已优先迁移 release_state=1 且 ID 较新的调度，请人工确认其余调度。");
             } else {
                 target.saveSchedule(s, workflowId, schedule.crontab(), schedule.timezone(), schedule.failureStrategy(), schedule.workerGroup());
-                finishItem(itemId, "SUCCESS", "WORKFLOW_SCHEDULE", String.valueOf(workflowId), "调度配置已保存且 enabled=false");
+                finishItem(itemId, "SUCCESS", "WORKFLOW_SCHEDULE", String.valueOf(workflowId),
+                        "工作流调度已保存；数据开发 SQL 任务同步继承 Cron、参数与 DAG 依赖，均保持 disabled");
             }
             progress(runId, ++processed, total, "MIGRATE_SCHEDULE", schedule.crontab());
         }
@@ -435,7 +458,7 @@ public class MigrationService {
             node.put("name", t.name());
             node.put("nodeType", normalizeType(t.taskType()));
             node.put("devFileId", fileByTask.get(taskKey(t.code(), t.version())));
-            node.put("configJson", taskConfigJson(t));
+            node.put("configJson", taskConfigJson(w, t));
             int[] xy = positions.getOrDefault(t.code(), new int[]{0, 0});
             node.put("x", xy[0]); node.put("y", xy[1]);
             node.put("nodeCode", "DS319_" + t.code());
@@ -465,15 +488,19 @@ public class MigrationService {
         return params.path("rawScript").asText("");
     }
 
-    private String taskConfigJson(TaskRow t) {
+    private String taskConfigJson(WorkflowRow w, TaskRow t) {
         JsonNode params = source.parseTaskParams(t);
         Map<String, Object> config = new LinkedHashMap<>();
+        config.put("sourceWorkflowCode", w.code());
+        config.put("sourceTaskCode", t.code());
+        config.put("sourceTaskVersion", t.version());
         config.put("workerGroup", t.workerGroup() == null || t.workerGroup().isBlank() ? "default" : t.workerGroup());
-        config.put("failRetryTimes", t.retryTimes());
-        config.put("failRetryInterval", t.retryIntervalMinutes());
+        config.put("retryTimes", t.retryTimes());
+        config.put("retryIntervalMinutes", t.retryIntervalMinutes());
+        config.put("localParams", mergedParams(w, t));
         if (t.environmentCode() != null) config.put("environmentCode", t.environmentCode());
         if ("SQL".equals(normalizeType(t.taskType()))) {
-            config.put("datasourceId", params.path("datasource").asLong(0));
+            config.put("sourceDatasourceId", params.path("datasource").asLong(0));
             config.put("type", params.path("type").asText("MYSQL"));
             config.put("sqlType", params.path("sqlType").asInt(0));
             config.put("displayRows", params.path("displayRows").asInt(10));
@@ -485,6 +512,89 @@ public class MigrationService {
         }
         return json(config);
     }
+
+    private List<TaskRow> workflowTasks(WorkflowRow workflow, List<TaskRow> tasks) {
+        return tasks.stream().filter(t -> t.workflowCode() == workflow.code() && t.workflowVersion() == workflow.version()).toList();
+    }
+
+    private Map<Long, ScheduleRow> primarySchedules(List<ScheduleRow> schedules) {
+        Map<Long, ScheduleRow> selected = new LinkedHashMap<>();
+        for (ScheduleRow candidate : schedules) {
+            ScheduleRow current = selected.get(candidate.workflowCode());
+            if (current == null || candidate.releaseState() > current.releaseState()
+                    || candidate.releaseState() == current.releaseState() && candidate.id() > current.id()) {
+                selected.put(candidate.workflowCode(), candidate);
+            }
+        }
+        return selected;
+    }
+
+    private List<Long> upstreamFileIds(WorkflowRow workflow, TaskRow task, List<EdgeRow> edges, Map<String, Long> fileByTask) {
+        LinkedHashSet<Long> result = new LinkedHashSet<>();
+        for (EdgeRow edge : edges) {
+            if (edge.workflowCode() != workflow.code() || edge.workflowVersion() != workflow.version()) continue;
+            if (edge.preTaskCode() == 0 || edge.postTaskCode() != task.code() || edge.postTaskVersion() != task.version()) continue;
+            Long upstream = fileByTask.get(taskKey(edge.preTaskCode(), edge.preTaskVersion()));
+            if (upstream != null) result.add(upstream);
+        }
+        return new ArrayList<>(result);
+    }
+
+    private List<Map<String, String>> mergedParams(WorkflowRow workflow, TaskRow task) {
+        LinkedHashMap<String, String> values = new LinkedHashMap<>();
+        if (workflow.globalParams() != null && !workflow.globalParams().isBlank()) {
+            try { mergeParamArray(mapper.readTree(workflow.globalParams()), values); } catch (Exception ignored) { }
+        }
+        JsonNode taskParams = source.parseTaskParams(task);
+        mergeParamArray(taskParams.path("localParams"), values);
+        List<Map<String, String>> result = new ArrayList<>();
+        values.forEach((key, value) -> result.add(Map.of("key", key, "value", value)));
+        return result;
+    }
+
+    private void mergeParamArray(JsonNode params, LinkedHashMap<String, String> values) {
+        if (params == null || !params.isArray()) return;
+        for (JsonNode param : params) {
+            String key = param.path("prop").asText(param.path("key").asText("")).trim();
+            if (key.isBlank() || !key.matches("[A-Za-z_][A-Za-z0-9_.-]*")) continue;
+            values.put(key, param.path("value").asText(""));
+        }
+    }
+
+    private String businessDateParam(List<Map<String, String>> params) {
+        List<String> preferred = List.of("biz_date", "bizdate", "business_date", "businessdate", "dt", "date", "start_dt");
+        for (String key : preferred) {
+            for (Map<String, String> param : params) if (key.equalsIgnoreCase(param.get("key"))) return param.get("value");
+        }
+        for (Map<String, String> param : params) {
+            String value = param.getOrDefault("value", "");
+            if (value.contains("system.biz") || value.startsWith("$[")) return value;
+        }
+        return "${system.biz.date}";
+    }
+
+    private CronDisplay cronDisplay(String cron) {
+        String[] fields = cron == null ? new String[0] : cron.trim().split("\\s+");
+        if (fields.length < 6) return new CronDisplay("CRON", "00:00");
+        Integer minute = cronNumber(fields[1], 0, 59);
+        Integer hour = cronNumber(fields[2], 0, 23);
+        String dayOfMonth = fields[3], month = fields[4], dayOfWeek = fields[5];
+        String executionTime = hour == null || minute == null ? "00:00" : String.format(Locale.ROOT, "%02d:%02d", hour, minute);
+        boolean everyday = "*".equals(month) && (("*".equals(dayOfMonth) && "?".equals(dayOfWeek))
+                || ("?".equals(dayOfMonth) && "*".equals(dayOfWeek)));
+        if (minute != null && "*".equals(fields[2]) && everyday) return new CronDisplay("HOURLY", String.format(Locale.ROOT, "00:%02d", minute));
+        if (hour != null && minute != null && everyday) return new CronDisplay("DAILY", executionTime);
+        if (hour != null && minute != null && "?".equals(dayOfMonth) && !"*".equals(dayOfWeek) && !"?".equals(dayOfWeek)) return new CronDisplay("WEEKLY", executionTime);
+        if (hour != null && minute != null && cronNumber(dayOfMonth, 1, 31) != null && "?".equals(dayOfWeek)) return new CronDisplay("MONTHLY", executionTime);
+        return new CronDisplay("CRON", executionTime);
+    }
+
+    private Integer cronNumber(String value, int min, int max) {
+        try { int number = Integer.parseInt(value); return number >= min && number <= max ? number : null; }
+        catch (Exception ignored) { return null; }
+    }
+
+    private record CronDisplay(String cycleType, String executionTime) { }
 
     private Map<Long, int[]> parseLocations(String raw) {
         Map<Long, int[]> result = new HashMap<>();
