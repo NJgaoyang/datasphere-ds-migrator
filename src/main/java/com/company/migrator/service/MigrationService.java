@@ -275,15 +275,22 @@ public class MigrationService {
             if (!sourceCheck.success()) throw new IllegalStateException(sourceCheck.message());
             DataSphereClient.TargetCheck targetCheck = target.test(s);
             if (!targetCheck.success()) throw new IllegalStateException(targetCheck.message());
-            Snapshot snapshot = source.read(s);
+            Snapshot fullSnapshot = source.read(s);
             int requestedWorkflowCount = workflowCodes.size();
             int autoIncludedUpstreams = 0;
             Set<Long> effectiveWorkflowCodes = workflowCodes;
             if (!migrateAll) {
-                effectiveWorkflowCodes = expandSqlUpstreamWorkflowCodes(snapshot, workflowCodes);
+                effectiveWorkflowCodes = expandSqlUpstreamWorkflowCodes(fullSnapshot, workflowCodes);
                 autoIncludedUpstreams = Math.max(0, effectiveWorkflowCodes.size() - requestedWorkflowCount);
             }
-            snapshot = filterSnapshot(snapshot, migrateAll, effectiveWorkflowCodes);
+            Set<Long> staleTaskCodes = Set.of();
+            if (!dryRun) {
+                LinkedHashSet<Long> historical = new LinkedHashSet<>(source.historicalTaskCodes(s, effectiveWorkflowCodes));
+                Set<Long> currentTaskCodes = fullSnapshot.tasks().stream().map(TaskRow::code).collect(Collectors.toSet());
+                historical.removeAll(currentTaskCodes);
+                staleTaskCodes = historical;
+            }
+            Snapshot snapshot = filterSnapshot(fullSnapshot, migrateAll, effectiveWorkflowCodes);
             if (snapshot.workflows().isEmpty()) throw new IllegalStateException("选择范围内没有可迁移工作流");
             event(runId, "INFO", "SCOPE", migrateAll
                     ? "迁移范围：全部工作流"
@@ -292,7 +299,7 @@ public class MigrationService {
                 dryRun(runId, snapshot);
                 return;
             }
-            executeMigration(runId, s, snapshot);
+            executeMigration(runId, s, snapshot, staleTaskCodes);
         } catch (CancelledException ex) {
             jdbc.update("UPDATE migration_run SET status='CANCELLED',phase='CANCELLED',message='迁移已取消',finished_at=CURRENT_TIMESTAMP WHERE id=?", runId);
             event(runId, "WARN", "CANCELLED", "迁移任务已取消");
@@ -420,7 +427,7 @@ public class MigrationService {
         completeRun(runId, "试运行完成，未修改 DataSphere");
     }
 
-    private void executeMigration(long runId, Settings s, Snapshot snapshot) {
+    private void executeMigration(long runId, Settings s, Snapshot snapshot, Set<Long> staleTaskCodes) {
         long projectId = target.singleProjectId(s);
         Map<Long, Long> folderByProject = new LinkedHashMap<>();
         Map<String, TaskRow> tasks = uniqueTasks(snapshot);
@@ -567,6 +574,7 @@ public class MigrationService {
             }
             progress(runId, ++processed, total, "MIGRATE_SCHEDULE", schedule.crontab());
         }
+        cleanupStaleTaskMappings(runId, s, staleTaskCodes);
         completeRun(runId, "迁移完成；所有新工作流和调度保持 Offline，未自动切生产");
     }
 
@@ -894,6 +902,41 @@ public class MigrationService {
         List<Long> ids = jdbc.query("SELECT target_id FROM migration_object_map WHERE source_type=? AND source_code=? AND source_version=? AND target_type=?",
                 (rs, n) -> Long.parseLong(rs.getString(1)), sourceType, sourceCode, sourceVersion, targetType);
         return ids.isEmpty() ? null : ids.get(0);
+    }
+
+    private void cleanupStaleTaskMappings(long runId, Settings settings, Set<Long> staleTaskCodes) {
+        if (staleTaskCodes == null || staleTaskCodes.isEmpty()) return;
+        for (Long sourceCode : staleTaskCodes) {
+            List<Long> fileIds = jdbc.query(
+                    "SELECT DISTINCT target_id FROM migration_object_map WHERE source_type='TASK' AND source_code=? AND target_type='DEV_FILE'",
+                    (rs, n) -> Long.parseLong(rs.getString(1)), String.valueOf(sourceCode));
+            for (Long fileId : fileIds) {
+                Integer shared = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM migration_object_map WHERE source_type='TASK' AND target_type='DEV_FILE' AND target_id=? AND source_code<>?",
+                        Integer.class, String.valueOf(fileId), String.valueOf(sourceCode));
+                if (shared != null && shared > 0) {
+                    issue(runId, null, "WARN", "STALE_TASK_TARGET_SHARED", "TASK", String.valueOf(sourceCode),
+                            "DEV_FILE #" + fileId, "历史 Task 映射目标仍被其他 Task Code 共用，未自动回收",
+                            "请确认该开发任务是否仍需保留。");
+                    continue;
+                }
+                if (!target.fileExists(settings, fileId)) {
+                    jdbc.update("DELETE FROM migration_object_map WHERE source_type='TASK' AND source_code=? AND target_type='DEV_FILE'", String.valueOf(sourceCode));
+                    event(runId, "INFO", "CLEAN_STALE_TASK", "历史 Task " + sourceCode + " 的目标文件已不存在，映射已清理");
+                    continue;
+                }
+                String lifecycle = target.fileLifecycleStatus(settings, fileId);
+                if (!"OFFLINE".equalsIgnoreCase(lifecycle)) {
+                    issue(runId, null, "WARN", "STALE_TASK_TARGET_ONLINE", "TASK", String.valueOf(sourceCode),
+                            "DEV_FILE #" + fileId, "历史 Task 对应开发任务仍为 " + lifecycle + "，未自动回收",
+                            "请先确认生产使用情况并手工下线后再清理。");
+                    continue;
+                }
+                target.deleteFile(settings, fileId);
+                jdbc.update("DELETE FROM migration_object_map WHERE source_type='TASK' AND source_code=? AND target_type='DEV_FILE'", String.valueOf(sourceCode));
+                event(runId, "INFO", "CLEAN_STALE_TASK", "历史 Task " + sourceCode + " · 已将旧开发文件 #" + fileId + " 移入回收站");
+            }
+        }
     }
 
     private Long reusableTaskFileId(Settings settings, TaskRow task, String normalizedType) {

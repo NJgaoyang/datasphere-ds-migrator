@@ -25,6 +25,20 @@ class DolphinScheduler319ReaderTest {
                         "information_schema"));
     }
 
+
+    @Test
+    void readsHistoricalTaskCodesAcrossWorkflowVersions() throws Exception {
+        String url = "jdbc:h2:mem:history;MODE=MySQL;DB_CLOSE_DELAY=-1";
+        try (Connection c = DriverManager.getConnection(url, "sa", "")) {
+            execute(c, "CREATE TABLE t_ds_process_task_relation(" +
+                    "process_definition_code BIGINT, process_definition_version INT, post_task_code BIGINT, post_task_version INT)");
+            execute(c, "INSERT INTO t_ds_process_task_relation VALUES (900,1,100,1),(900,2,100,2),(900,1,101,1),(901,1,200,1)");
+        }
+        var settings = new com.company.migrator.common.MigrationModels.Settings(url, "sa", "", "", "", "");
+        var codes = new DolphinScheduler319Reader(new ObjectMapper()).historicalTaskCodes(settings, java.util.Set.of(900L));
+        assertEquals(java.util.Set.of(100L, 101L), codes);
+    }
+
     @Test
     void fallsBackToCurrentTaskDefinitionWhenLogVersionIsMissing() throws Exception {
         try (Connection c = database("fallback")) {

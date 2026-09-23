@@ -99,6 +99,22 @@ public class DolphinScheduler319Reader {
         }
     }
 
+    public Set<Long> historicalTaskCodes(Settings settings, Set<Long> workflowCodes) throws SQLException {
+        if (workflowCodes == null || workflowCodes.isEmpty()) return Set.of();
+        String placeholders = String.join(",", Collections.nCopies(workflowCodes.size(), "?"));
+        String sql = "SELECT DISTINCT post_task_code FROM t_ds_process_task_relation " +
+                "WHERE process_definition_code IN (" + placeholders + ") AND post_task_code<>0";
+        LinkedHashSet<Long> result = new LinkedHashSet<>();
+        try (Connection c = open(settings); PreparedStatement ps = c.prepareStatement(sql)) {
+            int index = 1;
+            for (Long code : workflowCodes) ps.setLong(index++, code);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) result.add(rs.getLong(1));
+            }
+        }
+        return result;
+    }
+
     private List<ProjectRow> readProjects(Connection c) throws SQLException {
         String sql = "SELECT code,name,description FROM t_ds_project ORDER BY name";
         List<ProjectRow> rows = new ArrayList<>();

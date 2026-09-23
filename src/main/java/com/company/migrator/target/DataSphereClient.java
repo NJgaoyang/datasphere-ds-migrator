@@ -73,6 +73,14 @@ public class DataSphereClient {
         return data(get(settings, "/api/files/" + fileId)).path("fileType").asText("");
     }
 
+    public String fileLifecycleStatus(Settings settings, long fileId) {
+        return data(get(settings, "/api/files/" + fileId)).path("lifecycleStatus").asText("");
+    }
+
+    public void deleteFile(Settings settings, long fileId) {
+        request(settings).delete().uri("/api/files/" + fileId).retrieve().toBodilessEntity();
+    }
+
     public long createWorkflow(Settings settings, Map<String, Object> payload) {
         return data(post(settings, "/api/workflows", payload)).path("id").asLong();
     }
