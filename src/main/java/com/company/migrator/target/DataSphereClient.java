@@ -59,6 +59,20 @@ public class DataSphereClient {
         return data(post(settings, "/api/files", payload)).path("id").asLong();
     }
 
+    public void updateFile(Settings settings, long fileId, Long folderId, String name, String content, String description) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("content", content == null ? "" : content);
+        payload.put("name", name);
+        payload.put("description", description == null ? "" : description);
+        payload.put("folderId", folderId);
+        payload.put("moveToRoot", folderId == null);
+        data(put(settings, "/api/files/" + fileId, payload));
+    }
+
+    public String fileType(Settings settings, long fileId) {
+        return data(get(settings, "/api/files/" + fileId)).path("fileType").asText("");
+    }
+
     public long createWorkflow(Settings settings, Map<String, Object> payload) {
         return data(post(settings, "/api/workflows", payload)).path("id").asLong();
     }

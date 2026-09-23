@@ -450,19 +450,19 @@ public class MigrationService {
                 progress(runId, ++processed, total, "MIGRATE_TASK", t.name());
                 continue;
             }
-            long itemId = insertItem(runId, "TASK", String.valueOf(t.code()), t.version(), t.name(), type, "RUNNING", "创建开发文件", json(t));
-            Long existing = mappedId("TASK", String.valueOf(t.code()), t.version(), "DEV_FILE");
-            if (existing != null && !target.fileExists(s, existing)) existing = null;
+            long itemId = insertItem(runId, "TASK", String.valueOf(t.code()), t.version(), t.name(), type, "RUNNING", "创建/更新开发文件", json(t));
+            Long existing = reusableTaskFileId(s, t, type);
+            Long folderId = folderByProject.get(t.projectCode());
             long fileId;
             if (existing != null) {
                 fileId = existing;
+                target.updateFile(s, fileId, folderId, t.name(), taskContent(t), t.description());
             } else {
-                Long folderId = folderByProject.get(t.projectCode());
                 fileId = target.createFile(s, projectId, folderId, t.name(), type, taskContent(t), t.description());
-                saveMap("TASK", String.valueOf(t.code()), t.version(), "DEV_FILE", String.valueOf(fileId), t.name());
             }
+            saveMap("TASK", String.valueOf(t.code()), t.version(), "DEV_FILE", String.valueOf(fileId), t.name());
             fileByTask.put(taskKey(t.code(), t.version()), fileId);
-            finishItem(itemId, "SUCCESS", "DEV_FILE", String.valueOf(fileId), existing == null ? "开发文件已创建" : "复用已有映射");
+            finishItem(itemId, "SUCCESS", "DEV_FILE", String.valueOf(fileId), existing == null ? "开发文件已创建" : "按 Task Code 复用并更新已有开发文件");
             progress(runId, ++processed, total, "MIGRATE_TASK", t.name());
         }
 
@@ -894,6 +894,18 @@ public class MigrationService {
         List<Long> ids = jdbc.query("SELECT target_id FROM migration_object_map WHERE source_type=? AND source_code=? AND source_version=? AND target_type=?",
                 (rs, n) -> Long.parseLong(rs.getString(1)), sourceType, sourceCode, sourceVersion, targetType);
         return ids.isEmpty() ? null : ids.get(0);
+    }
+
+    private Long reusableTaskFileId(Settings settings, TaskRow task, String normalizedType) {
+        List<Long> mappedIds = jdbc.query(
+                "SELECT target_id FROM migration_object_map WHERE source_type='TASK' AND source_code=? AND target_type='DEV_FILE' ORDER BY source_version DESC",
+                (rs, n) -> Long.parseLong(rs.getString(1)), String.valueOf(task.code()));
+        for (Long fileId : new LinkedHashSet<>(mappedIds)) {
+            if (!target.fileExists(settings, fileId)) continue;
+            String targetType = normalizeType(target.fileType(settings, fileId));
+            if (normalizedType.equals(targetType)) return fileId;
+        }
+        return null;
     }
 
     private void deleteMap(String sourceType, String sourceCode, int sourceVersion, String targetType) {
