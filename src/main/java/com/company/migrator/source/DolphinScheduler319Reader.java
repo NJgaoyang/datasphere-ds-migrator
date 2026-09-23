@@ -12,7 +12,7 @@ import java.util.*;
 public class DolphinScheduler319Reader {
     public static final String EXPECTED_VERSION = "3.1.9";
     private static final Set<String> REQUIRED_TABLES = Set.of(
-            "t_ds_project", "t_ds_process_definition", "t_ds_task_definition_log",
+            "t_ds_project", "t_ds_process_definition", "t_ds_task_definition", "t_ds_task_definition_log",
             "t_ds_process_task_relation", "t_ds_schedules", "t_ds_datasource");
 
     private final ObjectMapper mapper;
@@ -68,13 +68,23 @@ public class DolphinScheduler319Reader {
         return rows;
     }
 
-    private List<TaskRow> readTasks(Connection c) throws SQLException {
+    List<TaskRow> readTasks(Connection c) throws SQLException {
+        String taskSource = "(" +
+                "SELECT code,version,name,task_type,task_params,description,project_code," +
+                "fail_retry_times,fail_retry_interval,worker_group,environment_code FROM t_ds_task_definition_log " +
+                "UNION ALL " +
+                "SELECT current_task.code,current_task.version,current_task.name,current_task.task_type,current_task.task_params," +
+                "current_task.description,current_task.project_code,current_task.fail_retry_times,current_task.fail_retry_interval," +
+                "current_task.worker_group,current_task.environment_code FROM t_ds_task_definition current_task " +
+                "WHERE NOT EXISTS (SELECT 1 FROM t_ds_task_definition_log task_log " +
+                "WHERE task_log.code=current_task.code AND task_log.version=current_task.version)" +
+                ") t";
         String sql = "SELECT DISTINCT r.process_definition_code,r.process_definition_version," +
                 "t.code,t.version,t.name,t.task_type,t.task_params,t.description,t.project_code," +
                 "t.fail_retry_times,t.fail_retry_interval,t.worker_group,t.environment_code " +
                 "FROM t_ds_process_task_relation r " +
                 "JOIN t_ds_process_definition p ON p.code=r.process_definition_code AND p.version=r.process_definition_version " +
-                "JOIN t_ds_task_definition_log t ON t.code=r.post_task_code AND t.version=r.post_task_version " +
+                "JOIN " + taskSource + " ON t.code=r.post_task_code AND t.version=r.post_task_version " +
                 "WHERE r.post_task_code<>0 ORDER BY r.process_definition_code,t.name";
         List<TaskRow> rows = new ArrayList<>();
         try (PreparedStatement ps = c.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {

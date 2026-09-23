@@ -35,6 +35,13 @@ class MigrationServiceTest {
                 Map.of("100:1", 1L, "101:1", 1L)));
     }
 
+
+    @Test
+    void workflowWithoutResolvedTasksIsNotSupported() {
+        var workflow = new com.company.migrator.source.DolphinScheduler319Reader.WorkflowRow(900, 1, "wf", null, 800, 1, null, null);
+        assertFalse(service.workflowSupported(workflow, List.of()));
+    }
+
     @Test
     void sharedSqlTaskKeepsOrchestrationWorkflow() {
         assertFalse(service.isDevelopmentOnlyWorkflow(

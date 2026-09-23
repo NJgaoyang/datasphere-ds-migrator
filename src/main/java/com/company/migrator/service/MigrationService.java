@@ -652,23 +652,33 @@ public class MigrationService {
     }
 
     private void cleanupLegacyDevelopmentWorkflow(long runId, long itemId, Settings settings, WorkflowRow workflow) {
-        Long oldWorkflowId = mappedId("WORKFLOW", String.valueOf(workflow.code()), workflow.version(), "WORKFLOW");
-        if (oldWorkflowId == null) return;
-        if (!target.workflowExists(settings, oldWorkflowId)) {
-            deleteMap("WORKFLOW", String.valueOf(workflow.code()), workflow.version(), "WORKFLOW");
-            return;
+        List<LegacyWorkflowMap> oldMappings = jdbc.query(
+                "SELECT source_version,target_id FROM migration_object_map " +
+                        "WHERE source_type='WORKFLOW' AND source_code=? AND target_type='WORKFLOW' ORDER BY source_version",
+                (rs, n) -> new LegacyWorkflowMap(rs.getInt(1), Long.parseLong(rs.getString(2))),
+                String.valueOf(workflow.code()));
+        for (LegacyWorkflowMap mapping : oldMappings) {
+            long oldWorkflowId = mapping.targetId();
+            if (!target.workflowExists(settings, oldWorkflowId)) {
+                deleteMap("WORKFLOW", String.valueOf(workflow.code()), mapping.sourceVersion(), "WORKFLOW");
+                continue;
+            }
+            String status = target.workflowStatus(settings, oldWorkflowId);
+            if ("DRAFT".equalsIgnoreCase(status)) {
+                target.deleteWorkflow(settings, oldWorkflowId);
+                deleteMap("WORKFLOW", String.valueOf(workflow.code()), mapping.sourceVersion(), "WORKFLOW");
+                event(runId, "INFO", "CLEAN_DUPLICATE_WORKFLOW", workflow.name() +
+                        " · 已清理旧的纯 SQL 草稿编排工作流 v" + mapping.sourceVersion() + " #" + oldWorkflowId);
+                continue;
+            }
+            issue(runId, itemId, "WARN", "DEVELOPMENT_ONLY_WORKFLOW_ALREADY_PUBLISHED", "WORKFLOW",
+                    String.valueOf(workflow.code()), workflow.name(), "旧的纯 SQL 编排工作流已不是草稿，未自动删除",
+                    "源版本=" + mapping.sourceVersion() + "，目标 Workflow #" + oldWorkflowId + " 状态=" + status +
+                            "，请确认后人工清理。数据开发任务流已作为后续迁移目标。");
         }
-        String status = target.workflowStatus(settings, oldWorkflowId);
-        if ("DRAFT".equalsIgnoreCase(status)) {
-            target.deleteWorkflow(settings, oldWorkflowId);
-            deleteMap("WORKFLOW", String.valueOf(workflow.code()), workflow.version(), "WORKFLOW");
-            event(runId, "INFO", "CLEAN_DUPLICATE_WORKFLOW", workflow.name() + " · 已清理旧的纯 SQL 草稿编排工作流 #" + oldWorkflowId);
-            return;
-        }
-        issue(runId, itemId, "WARN", "DEVELOPMENT_ONLY_WORKFLOW_ALREADY_PUBLISHED", "WORKFLOW",
-                String.valueOf(workflow.code()), workflow.name(), "旧的纯 SQL 编排工作流已不是草稿，未自动删除",
-                "目标 Workflow #" + oldWorkflowId + " 状态=" + status + "，请确认后人工清理。数据开发任务流已作为后续迁移目标。");
     }
+
+    private record LegacyWorkflowMap(int sourceVersion, long targetId) { }
 
     private Map<Long, ScheduleRow> primarySchedules(List<ScheduleRow> schedules) {
         Map<Long, ScheduleRow> selected = new LinkedHashMap<>();
@@ -785,9 +795,12 @@ public class MigrationService {
                 t -> taskKey(t.code(), t.version()), Function.identity(), (a, b) -> a, LinkedHashMap::new));
     }
 
-    private boolean workflowSupported(WorkflowRow w, List<TaskRow> tasks) {
-        return tasks.stream().filter(t -> t.workflowCode() == w.code() && t.workflowVersion() == w.version())
-                .allMatch(t -> AUTO_TASK_TYPES.contains(normalizeType(t.taskType())));
+    boolean workflowSupported(WorkflowRow w, List<TaskRow> tasks) {
+        List<TaskRow> workflowTasks = tasks.stream()
+                .filter(t -> t.workflowCode() == w.code() && t.workflowVersion() == w.version())
+                .toList();
+        return !workflowTasks.isEmpty()
+                && workflowTasks.stream().allMatch(t -> AUTO_TASK_TYPES.contains(normalizeType(t.taskType())));
     }
 
     private long createRun(String operation, boolean dryRun, String status, String phase, String message) {
