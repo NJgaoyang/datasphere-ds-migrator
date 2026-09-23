@@ -288,6 +288,7 @@ public class MigrationService {
                 LinkedHashSet<Long> historical = new LinkedHashSet<>(source.historicalTaskCodes(s, effectiveWorkflowCodes));
                 Set<Long> currentTaskCodes = fullSnapshot.tasks().stream().map(TaskRow::code).collect(Collectors.toSet());
                 historical.removeAll(currentTaskCodes);
+                historical.addAll(mappedStaleTaskCodesForScope(effectiveWorkflowCodes, currentTaskCodes));
                 staleTaskCodes = historical;
             }
             Snapshot snapshot = filterSnapshot(fullSnapshot, migrateAll, effectiveWorkflowCodes);
@@ -902,6 +903,27 @@ public class MigrationService {
         List<Long> ids = jdbc.query("SELECT target_id FROM migration_object_map WHERE source_type=? AND source_code=? AND source_version=? AND target_type=?",
                 (rs, n) -> Long.parseLong(rs.getString(1)), sourceType, sourceCode, sourceVersion, targetType);
         return ids.isEmpty() ? null : ids.get(0);
+    }
+
+    private Set<Long> mappedStaleTaskCodesForScope(Set<Long> workflowCodes, Set<Long> currentTaskCodes) {
+        if (workflowCodes == null || workflowCodes.isEmpty()) return Set.of();
+        List<Map<String, String>> rows = jdbc.query(
+                "SELECT DISTINCT m.source_code,(SELECT i.payload_json FROM migration_item i " +
+                        "WHERE i.object_type='TASK' AND i.source_code=m.source_code AND i.payload_json IS NOT NULL " +
+                        "ORDER BY i.id DESC LIMIT 1) payload_json " +
+                        "FROM migration_object_map m WHERE m.source_type='TASK' AND m.target_type='DEV_FILE'",
+                (rs, n) -> Map.of("sourceCode", rs.getString(1), "payload", Objects.toString(rs.getString(2), "")));
+        LinkedHashSet<Long> result = new LinkedHashSet<>();
+        for (Map<String, String> row : rows) {
+            try {
+                long sourceCode = Long.parseLong(row.get("sourceCode"));
+                if (currentTaskCodes.contains(sourceCode)) continue;
+                JsonNode payload = mapper.readTree(row.get("payload"));
+                long workflowCode = payload.path("workflowCode").asLong(0);
+                if (workflowCodes.contains(workflowCode)) result.add(sourceCode);
+            } catch (Exception ignored) { }
+        }
+        return result;
     }
 
     private void cleanupStaleTaskMappings(long runId, Settings settings, Set<Long> staleTaskCodes) {
