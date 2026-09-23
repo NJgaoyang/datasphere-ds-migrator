@@ -10,6 +10,21 @@ import java.sql.Statement;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class DolphinScheduler319ReaderTest {
+
+    @Test
+    void replacesOnlyDatabaseAndPreservesMysqlParameters() {
+        assertEquals(
+                "jdbc:mysql://172.17.0.12:3306/dolphinscheduler?useUnicode=true&serverTimezone=Asia/Shanghai",
+                DolphinScheduler319Reader.withDatabase(
+                        "jdbc:mysql://172.17.0.12:3306/old_db?useUnicode=true&serverTimezone=Asia/Shanghai",
+                        "dolphinscheduler"));
+        assertEquals(
+                "jdbc:mysql://172.17.0.12:3306/information_schema?useSSL=false",
+                DolphinScheduler319Reader.withDatabase(
+                        "jdbc:mysql://172.17.0.12:3306?useSSL=false",
+                        "information_schema"));
+    }
+
     @Test
     void fallsBackToCurrentTaskDefinitionWhenLogVersionIsMissing() throws Exception {
         try (Connection c = database("fallback")) {

@@ -22,7 +22,57 @@ public class DolphinScheduler319Reader {
     }
 
     public Connection open(Settings settings) throws SQLException {
-        return DriverManager.getConnection(settings.sourceJdbcUrl(), settings.sourceUsername(), settings.sourcePassword());
+        try {
+            return DriverManager.getConnection(settings.sourceJdbcUrl(), settings.sourceUsername(), settings.sourcePassword());
+        } catch (SQLException ex) {
+            if (!isUnknownDatabase(ex)) throw ex;
+            String database = discoverSourceDatabase(settings);
+            return DriverManager.getConnection(withDatabase(settings.sourceJdbcUrl(), database),
+                    settings.sourceUsername(), settings.sourcePassword());
+        }
+    }
+
+    String discoverSourceDatabase(Settings settings) throws SQLException {
+        String serverUrl = withDatabase(settings.sourceJdbcUrl(), "information_schema");
+        List<String> candidates = new ArrayList<>();
+        String placeholders = String.join(",", Collections.nCopies(REQUIRED_TABLES.size(), "?"));
+        String sql = "SELECT table_schema FROM information_schema.tables WHERE table_name IN (" + placeholders + ") " +
+                "GROUP BY table_schema HAVING COUNT(DISTINCT table_name)=? ORDER BY table_schema";
+        try (Connection c = DriverManager.getConnection(serverUrl, settings.sourceUsername(), settings.sourcePassword());
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            int index = 1;
+            for (String table : REQUIRED_TABLES) ps.setString(index++, table);
+            ps.setInt(index, REQUIRED_TABLES.size());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) candidates.add(rs.getString(1));
+            }
+        }
+        if (candidates.size() == 1) return candidates.getFirst();
+        if (candidates.isEmpty()) {
+            throw new SQLException("配置的 DolphinScheduler 数据库不存在，且同一 MySQL 实例未发现完整的 3.1.9 元数据库");
+        }
+        throw new SQLException("配置的 DolphinScheduler 数据库不存在，发现多个候选库：" + String.join(", ", candidates) + "，请明确配置库名");
+    }
+
+    static String withDatabase(String jdbcUrl, String database) {
+        if (jdbcUrl == null || !jdbcUrl.startsWith("jdbc:mysql://")) return jdbcUrl;
+        int authorityStart = "jdbc:mysql://".length();
+        int query = jdbcUrl.indexOf('?', authorityStart);
+        int slash = jdbcUrl.indexOf('/', authorityStart);
+        String suffix = query >= 0 ? jdbcUrl.substring(query) : "";
+        String authority;
+        if (slash >= 0 && (query < 0 || slash < query)) authority = jdbcUrl.substring(0, slash);
+        else authority = query >= 0 ? jdbcUrl.substring(0, query) : jdbcUrl;
+        return authority + "/" + database + suffix;
+    }
+
+    private boolean isUnknownDatabase(SQLException ex) {
+        for (SQLException cursor = ex; cursor != null; cursor = cursor.getNextException()) {
+            if (cursor.getErrorCode() == 1049) return true;
+            String message = cursor.getMessage();
+            if (message != null && message.toLowerCase(Locale.ROOT).contains("unknown database")) return true;
+        }
+        return false;
     }
 
     public SourceCheck test(Settings settings) {
@@ -35,7 +85,9 @@ public class DolphinScheduler319Reader {
             }
             List<String> missing = REQUIRED_TABLES.stream().filter(t -> !found.contains(t)).sorted().toList();
             if (!missing.isEmpty()) return new SourceCheck(false, "缺少 DolphinScheduler 3.1.9 核心表：" + String.join(", ", missing), "UNKNOWN");
-            return new SourceCheck(true, "DolphinScheduler 元数据库连接成功，3.1.9 核心表结构存在", EXPECTED_VERSION);
+            String database = c.getCatalog();
+            String suffix = database == null || database.isBlank() ? "" : "（" + database + "）";
+            return new SourceCheck(true, "DolphinScheduler 元数据库连接成功" + suffix + "，3.1.9 核心表结构存在", EXPECTED_VERSION);
         } catch (Exception ex) {
             return new SourceCheck(false, rootMessage(ex), "UNKNOWN");
         }
