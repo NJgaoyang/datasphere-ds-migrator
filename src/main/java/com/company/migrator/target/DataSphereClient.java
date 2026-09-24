@@ -128,7 +128,7 @@ public class DataSphereClient {
     }
 
     public void saveDevelopmentSchedule(Settings settings, long fileId, String cycleType, String executionTime,
-                                        String cron, String timezone, String bizDateParam,
+                                        String cron, String timezone, String databaseName, String bizDateParam,
                                         List<Map<String, String>> localParams, int retryTimes, int retryIntervalMinutes,
                                         List<Long> upstreamFileIds) {
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -138,7 +138,7 @@ public class DataSphereClient {
         payload.put("cronExpression", cron);
         payload.put("timezone", timezone == null || timezone.isBlank() ? "Asia/Shanghai" : timezone);
         payload.put("dataSourceId", defaultStarRocksDataSourceId(settings));
-        payload.put("databaseName", null);
+        payload.put("databaseName", databaseName == null || databaseName.isBlank() ? null : databaseName.trim());
         payload.put("bizDateParam", bizDateParam == null || bizDateParam.isBlank() ? "${system.biz.date}" : bizDateParam);
         payload.put("localParams", localParams == null ? List.of() : localParams);
         payload.put("retryTimes", Math.max(0, Math.min(20, retryTimes)));

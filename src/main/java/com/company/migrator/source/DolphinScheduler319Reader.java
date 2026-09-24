@@ -99,6 +99,20 @@ public class DolphinScheduler319Reader {
         }
     }
 
+    public String datasourceDatabase(Settings settings, long datasourceId) throws SQLException {
+        try (Connection c = open(settings);
+             PreparedStatement ps = c.prepareStatement("SELECT connection_params FROM t_ds_datasource WHERE id=?")) {
+            ps.setLong(1, datasourceId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return "";
+                String raw = rs.getString(1);
+                if (raw == null || raw.isBlank()) return "";
+                try { return mapper.readTree(raw).path("database").asText("").trim(); }
+                catch (Exception ignored) { return ""; }
+            }
+        }
+    }
+
     public Set<Long> historicalTaskCodes(Settings settings, Set<Long> workflowCodes) throws SQLException {
         if (workflowCodes == null || workflowCodes.isEmpty()) return Set.of();
         String placeholders = String.join(",", Collections.nCopies(workflowCodes.size(), "?"));

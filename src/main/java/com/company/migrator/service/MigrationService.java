@@ -490,7 +490,7 @@ public class MigrationService {
                 auto.fileIds().stream().filter(id -> id != fileId).forEach(mergedUpstreams::add);
                 List<Long> upstreams = new ArrayList<>(mergedUpstreams);
                 target.saveDevelopmentSchedule(s, fileId, display.cycleType(), display.executionTime(),
-                        schedule.crontab(), schedule.timezone(), businessDateParam(localParams), localParams,
+                        schedule.crontab(), schedule.timezone(), sourceDatabaseName(s, t), businessDateParam(localParams), localParams,
                         t.retryTimes(), t.retryIntervalMinutes(), upstreams);
                 event(runId, "INFO", "MIGRATE_TASK_SCHEDULE", t.name() + " · " + schedule.crontab() +
                         " · 参数=" + localParams.size() + " · 上游=" + upstreams.size() +
@@ -751,16 +751,34 @@ public class MigrationService {
         }
     }
 
+    private String sourceDatabaseName(Settings settings, TaskRow task) {
+        JsonNode params = source.parseTaskParams(task);
+        long datasourceId = params.path("datasource").asLong(0);
+        if (datasourceId <= 0) return "";
+        try { return source.datasourceDatabase(settings, datasourceId); }
+        catch (Exception ex) { return ""; }
+    }
+
     private String businessDateParam(List<Map<String, String>> params) {
-        List<String> preferred = List.of("biz_date", "bizdate", "business_date", "businessdate", "dt", "date", "start_dt");
+        List<String> preferred = List.of("biz_date", "bizdate", "business_date", "businessdate", "dt", "date");
         for (String key : preferred) {
-            for (Map<String, String> param : params) if (key.equalsIgnoreCase(param.get("key"))) return param.get("value");
+            for (Map<String, String> param : params) {
+                if (!key.equalsIgnoreCase(param.get("key"))) continue;
+                String value = param.getOrDefault("value", "");
+                if (isDynamicBusinessDate(value)) return value;
+            }
         }
         for (Map<String, String> param : params) {
             String value = param.getOrDefault("value", "");
-            if (value.contains("system.biz") || value.startsWith("$[")) return value;
+            if (isDynamicBusinessDate(value)) return value;
         }
         return "${system.biz.date}";
+    }
+
+    private boolean isDynamicBusinessDate(String value) {
+        if (value == null) return false;
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        return normalized.contains("system.biz") || normalized.startsWith("$[");
     }
 
     private CronDisplay cronDisplay(String cron) {
