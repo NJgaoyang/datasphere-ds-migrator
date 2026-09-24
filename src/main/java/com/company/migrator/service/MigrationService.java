@@ -768,10 +768,6 @@ public class MigrationService {
                 if (isDynamicBusinessDate(value)) return value;
             }
         }
-        for (Map<String, String> param : params) {
-            String value = param.getOrDefault("value", "");
-            if (isDynamicBusinessDate(value)) return value;
-        }
         return "${system.biz.date}";
     }
 
