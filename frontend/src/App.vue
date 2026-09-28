@@ -124,6 +124,9 @@
       </div>
     </section>
       </el-tab-pane>
+      <el-tab-pane label="SQL 依赖分析" name="sqlDependencies">
+        <SqlDependencyPanel />
+      </el-tab-pane>
       <el-tab-pane label="数据清理" name="cleanup">
         <CleanupPanel />
       </el-tab-pane>
@@ -174,6 +177,7 @@ import axios from 'axios'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import CleanupPanel from './CleanupPanel.vue'
+import SqlDependencyPanel from './SqlDependencyPanel.vue'
 
 const settings = ref({ sourceJdbcUrl: '', sourceUsername: '', sourcePassword: '', targetBaseUrl: '', targetUsername: '', targetPassword: '' })
 const runs = ref([])
