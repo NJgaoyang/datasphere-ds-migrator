@@ -1,9 +1,11 @@
 package com.company.migrator.web;
 
 import com.company.migrator.common.MigrationModels.*;
+import com.company.migrator.common.SqlDependencyModels.*;
 import com.company.migrator.service.CleanupService;
 import com.company.migrator.service.MigrationService;
 import com.company.migrator.service.SettingService;
+import com.company.migrator.service.SqlDependencyService;
 import com.company.migrator.source.DolphinScheduler319Reader;
 import com.company.migrator.target.DataSphereClient;
 import org.springframework.web.bind.annotation.*;
@@ -16,12 +18,15 @@ public class MigrationConsoleController {
     private final SettingService settings;
     private final MigrationService migrations;
     private final CleanupService cleanup;
+    private final SqlDependencyService sqlDependencies;
     private final DolphinScheduler319Reader source;
     private final DataSphereClient target;
 
     public MigrationConsoleController(SettingService settings, MigrationService migrations, CleanupService cleanup,
+                                      SqlDependencyService sqlDependencies,
                                       DolphinScheduler319Reader source, DataSphereClient target) {
-        this.settings = settings; this.migrations = migrations; this.cleanup = cleanup; this.source = source; this.target = target;
+        this.settings = settings; this.migrations = migrations; this.cleanup = cleanup; this.sqlDependencies = sqlDependencies;
+        this.source = source; this.target = target;
     }
 
     @GetMapping("/health")
@@ -53,6 +58,14 @@ public class MigrationConsoleController {
 
     @PostMapping("/cleanup")
     public CleanupResult cleanup(@RequestBody CleanupRequest request) { return cleanup.cleanup(request); }
+
+    @GetMapping("/sql-dependencies/scan")
+    public SqlDependencyScanResult scanSqlDependencies() { return sqlDependencies.scan(); }
+
+    @PostMapping("/sql-dependencies/apply")
+    public SqlDependencyApplyResult applySqlDependencies(@RequestBody(required = false) SqlDependencyApplyRequest request) {
+        return sqlDependencies.apply(request);
+    }
 
     @GetMapping("/scope")
     public MigrationScopeView scope() { return migrations.migrationScope(); }
