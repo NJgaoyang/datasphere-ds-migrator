@@ -48,6 +48,9 @@ public class MigrationConsoleController {
     @PostMapping("/cleanup/preview")
     public CleanupPreview cleanupPreview(@RequestBody CleanupRequest request) { return cleanup.preview(request); }
 
+    @PostMapping("/cleanup/offline-development")
+    public OfflineResult offlineDevelopment() { return cleanup.offlineDevelopment(); }
+
     @PostMapping("/cleanup")
     public CleanupResult cleanup(@RequestBody CleanupRequest request) { return cleanup.cleanup(request); }
 
