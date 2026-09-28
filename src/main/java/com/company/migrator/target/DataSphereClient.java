@@ -69,12 +69,16 @@ public class DataSphereClient {
         data(put(settings, "/api/files/" + fileId, payload));
     }
 
+    public JsonNode file(Settings settings, long fileId) {
+        return data(get(settings, "/api/files/" + fileId));
+    }
+
     public String fileType(Settings settings, long fileId) {
-        return data(get(settings, "/api/files/" + fileId)).path("fileType").asText("");
+        return file(settings, fileId).path("fileType").asText("");
     }
 
     public String fileLifecycleStatus(Settings settings, long fileId) {
-        return data(get(settings, "/api/files/" + fileId)).path("lifecycleStatus").asText("");
+        return file(settings, fileId).path("lifecycleStatus").asText("");
     }
 
     public void offlineFile(Settings settings, long fileId) {
@@ -93,9 +97,13 @@ public class DataSphereClient {
         data(put(settings, "/api/workflows/" + workflowId, payload));
     }
 
+    public JsonNode workflow(Settings settings, long workflowId) {
+        return data(get(settings, "/api/workflows/" + workflowId));
+    }
+
     public boolean fileExists(Settings settings, long fileId) {
         try {
-            JsonNode row = data(get(settings, "/api/files/" + fileId));
+            JsonNode row = file(settings, fileId);
             return row.path("id").asLong(0) == fileId;
         } catch (Exception ignored) {
             return false;
@@ -104,7 +112,7 @@ public class DataSphereClient {
 
     public boolean workflowExists(Settings settings, long workflowId) {
         try {
-            JsonNode row = data(get(settings, "/api/workflows/" + workflowId));
+            JsonNode row = workflow(settings, workflowId);
             return row.path("id").asLong(0) == workflowId;
         } catch (Exception ignored) {
             return false;
@@ -112,15 +120,14 @@ public class DataSphereClient {
     }
 
     public String workflowCode(Settings settings, long workflowId) {
-        JsonNode row = data(get(settings, "/api/workflows/" + workflowId));
+        JsonNode row = workflow(settings, workflowId);
         String code = row.path("workflowCode").asText("").trim();
         if (code.isBlank()) throw new IllegalStateException("DataSphere Workflow #" + workflowId + " 未返回 workflowCode");
         return code;
     }
 
     public String workflowStatus(Settings settings, long workflowId) {
-        JsonNode row = data(get(settings, "/api/workflows/" + workflowId));
-        return row.path("status").asText("");
+        return workflow(settings, workflowId).path("status").asText("");
     }
 
     public void deleteWorkflow(Settings settings, long workflowId) {
