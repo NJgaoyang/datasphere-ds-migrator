@@ -26,6 +26,23 @@ public final class MigrationModels {
         public List<Long> workflowCodesValue() { return workflowCodes == null ? List.of() : workflowCodes; }
     }
 
+    public record CleanupRequest(Boolean development, Boolean workflows) {
+        public boolean developmentValue() { return Boolean.TRUE.equals(development); }
+        public boolean workflowsValue() { return Boolean.TRUE.equals(workflows); }
+        public boolean empty() { return !developmentValue() && !workflowsValue(); }
+    }
+
+    public record CleanupPreview(
+            boolean developmentSelected, boolean workflowsSelected,
+            int developmentTaskCount, int recycledDevelopmentTaskCount, int workflowCount,
+            int totalSelectedObjects) { }
+
+    public record CleanupFailure(String objectType, String objectName, String message) { }
+
+    public record CleanupResult(
+            boolean success, int deletedDevelopmentTasks, int deletedRecycledDevelopmentTasks,
+            int deletedWorkflows, int failureCount, List<CleanupFailure> failures, String message) { }
+
     public record MigrationScopeView(int projectCount, int workflowCount, int taskCount, List<ProjectScopeView> projects) { }
     public record ProjectScopeView(long projectCode, String projectName, int workflowCount, int taskCount, List<WorkflowScopeView> workflows) { }
     public record WorkflowScopeView(long workflowCode, int workflowVersion, String workflowName, boolean online, int taskCount, List<String> taskTypes) { }
