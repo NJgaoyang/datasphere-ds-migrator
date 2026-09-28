@@ -21,11 +21,14 @@
     </div>
 
     <el-alert
-      title="删除顺序固定为：先任务流，再数据开发。只勾数据开发时，如果任务仍被未清除的任务流引用，DataSphere 会拒绝删除并返回失败明细。"
+      title="一键清除会自动先下线 ONLINE 的数据开发任务；删除顺序固定为：先任务流，再数据开发。只勾数据开发时，如果任务仍被未清除的任务流引用，DataSphere 会拒绝删除并返回失败明细。"
       type="warning" :closable="false" show-icon />
 
     <div class="cleanup-actions">
       <el-button :loading="previewLoading" @click="refreshPreview">重新统计</el-button>
+      <el-button type="warning" :loading="offlineLoading" :disabled="!selected.development || !preview.developmentTaskCount" @click="runOfflineDevelopment">
+        一键下线数据开发
+      </el-button>
       <el-button type="danger" :loading="cleanupLoading" :disabled="!hasSelection || !preview.totalSelectedObjects" @click="runCleanup">
         一键清除
       </el-button>
@@ -47,6 +50,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 const selected = reactive({ development: true, workflows: true })
 const preview = reactive({ developmentTaskCount: 0, workflowCount: 0, totalSelectedObjects: 0 })
 const previewLoading = ref(false)
+const offlineLoading = ref(false)
 const cleanupLoading = ref(false)
 const failures = ref([])
 const allSelected = ref(true)
@@ -84,10 +88,29 @@ async function refreshPreview() {
   }
 }
 
+async function runOfflineDevelopment() {
+  await ElMessageBox.confirm(
+    `将检查本迁移工具记录的 ${preview.developmentTaskCount || 0} 个数据开发任务，并把其中 ONLINE 的任务批量下线。是否继续？`,
+    '确认一键下线',
+    { type: 'warning', confirmButtonText: '确认下线', cancelButtonText: '取消' }
+  )
+  offlineLoading.value = true
+  failures.value = []
+  try {
+    const { data } = await axios.post('/api/cleanup/offline-development')
+    failures.value = data.failures || []
+    data.success ? ElMessage.success(data.message) : ElMessage.warning(data.message)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || e?.message || String(e))
+  } finally {
+    offlineLoading.value = false
+  }
+}
+
 async function runCleanup() {
   const labels = [selected.development ? '数据开发' : '', selected.workflows ? '任务流' : ''].filter(Boolean).join('、')
   await ElMessageBox.confirm(
-    `将清除本迁移工具创建的 ${labels}，当前统计 ${preview.totalSelectedObjects || 0} 个对象。此操作不可通过迁移工具恢复，是否继续？`,
+    `将清除本迁移工具创建的 ${labels}，当前统计 ${preview.totalSelectedObjects || 0} 个对象。ONLINE 的数据开发任务会自动先下线。此操作不可通过迁移工具恢复，是否继续？`,
     '确认清除 DataSphere 任务',
     { type: 'error', confirmButtonText: '确认清除', cancelButtonText: '取消' }
   )
@@ -118,7 +141,7 @@ onMounted(refreshPreview)
 .cleanup-summary>div{padding:14px 16px;border:1px solid #e5e7eb;border-radius:8px;background:#fff}
 .cleanup-summary span{display:block;color:#6b7280;font-size:13px}
 .cleanup-summary strong{display:block;margin-top:6px;font-size:24px}
-.cleanup-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
+.cleanup-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px;flex-wrap:wrap}
 .failure-table{margin-top:16px}
 @media(max-width:760px){.cleanup-summary{grid-template-columns:1fr}.cleanup-options{align-items:flex-start;flex-direction:column;gap:10px}}
 </style>
