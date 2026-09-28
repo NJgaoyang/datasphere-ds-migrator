@@ -13,7 +13,7 @@ public class SqlTableLineageParser {
     private static final String IDENTIFIER = "[`\"A-Za-z0-9_$.-]+";
     private static final Pattern SOURCE_TABLE = Pattern.compile("(?i)\\b(?:FROM|JOIN)\\s+(" + IDENTIFIER + ")");
     private static final Pattern TARGET_TABLE = Pattern.compile(
-            "(?i)\\b(?:INSERT\\s+(?:OVERWRITE\\s+(?:TABLE\\s+)?)?INTO|INSERT\\s+OVERWRITE\\s+(?:TABLE\\s+)?|REPLACE\\s+INTO|MERGE\\s+INTO|CREATE\\s+TABLE(?:\\s+IF\\s+NOT\\s+EXISTS)?)\\s+(" + IDENTIFIER + ")");
+            "(?i)\\b(?:INSERT\\s+INTO|INSERT\\s+OVERWRITE(?:\\s+TABLE)?|REPLACE\\s+INTO|MERGE\\s+INTO|CREATE\\s+TABLE(?:\\s+IF\\s+NOT\\s+EXISTS)?)\\s+(" + IDENTIFIER + ")");
     private static final Pattern CTE = Pattern.compile("(?i)(?:\\bWITH|,)\\s*([`\"A-Za-z_][`\"A-Za-z0-9_$]*)\\s+AS\\s*\\(");
 
     public Lineage parse(String sql) {
