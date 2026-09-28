@@ -4,6 +4,7 @@ import com.company.migrator.common.MigrationModels.CleanupFailure;
 import com.company.migrator.common.MigrationModels.CleanupPreview;
 import com.company.migrator.common.MigrationModels.CleanupRequest;
 import com.company.migrator.common.MigrationModels.CleanupResult;
+import com.company.migrator.common.MigrationModels.OfflineResult;
 import com.company.migrator.common.MigrationModels.Settings;
 import com.company.migrator.target.DataSphereClient;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -34,6 +35,38 @@ public class CleanupService {
                 workflows, development + workflows);
     }
 
+    public OfflineResult offlineDevelopment() {
+        Settings s = settings.get();
+        List<CleanupFailure> failures = new ArrayList<>();
+        int offlined = 0;
+        int skipped = 0;
+
+        for (MappedTarget row : mappedTargets("DEV_FILE")) {
+            try {
+                if (!target.fileExists(s, row.id())) {
+                    skipped++;
+                    continue;
+                }
+                String lifecycle = target.fileLifecycleStatus(s, row.id());
+                if (!"ONLINE".equalsIgnoreCase(lifecycle)) {
+                    skipped++;
+                    continue;
+                }
+                target.offlineFile(s, row.id());
+                offlined++;
+            } catch (Exception ex) {
+                failures.add(new CleanupFailure("数据开发", row.name(), rootMessage(ex)));
+            }
+        }
+
+        int failureCount = failures.size();
+        String message = failureCount == 0
+                ? "下线完成；已下线数据开发任务 " + offlined + " 个，已离线或不存在 " + skipped + " 个"
+                : "下线完成但有 " + failureCount + " 个任务下线失败，请查看失败明细";
+        return new OfflineResult(failureCount == 0, offlined, skipped,
+                failureCount, List.copyOf(failures), message);
+    }
+
     public CleanupResult cleanup(CleanupRequest request) {
         if (request == null || request.empty()) throw new IllegalArgumentException("请至少勾选数据开发或任务流");
         Settings s = settings.get();
@@ -60,7 +93,7 @@ public class CleanupService {
                     if (target.fileExists(s, row.id())) {
                         String lifecycle = target.fileLifecycleStatus(s, row.id());
                         if ("ONLINE".equalsIgnoreCase(lifecycle)) {
-                            throw new IllegalStateException("开发任务仍为 ONLINE，请先在 DataSphere 下线后再清除");
+                            target.offlineFile(s, row.id());
                         }
                         target.deleteFile(s, row.id());
                     }
