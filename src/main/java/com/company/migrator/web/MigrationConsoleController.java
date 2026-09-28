@@ -1,6 +1,7 @@
 package com.company.migrator.web;
 
 import com.company.migrator.common.MigrationModels.*;
+import com.company.migrator.service.CleanupService;
 import com.company.migrator.service.MigrationService;
 import com.company.migrator.service.SettingService;
 import com.company.migrator.source.DolphinScheduler319Reader;
@@ -14,12 +15,13 @@ import java.util.*;
 public class MigrationConsoleController {
     private final SettingService settings;
     private final MigrationService migrations;
+    private final CleanupService cleanup;
     private final DolphinScheduler319Reader source;
     private final DataSphereClient target;
 
-    public MigrationConsoleController(SettingService settings, MigrationService migrations,
+    public MigrationConsoleController(SettingService settings, MigrationService migrations, CleanupService cleanup,
                                       DolphinScheduler319Reader source, DataSphereClient target) {
-        this.settings = settings; this.migrations = migrations; this.source = source; this.target = target;
+        this.settings = settings; this.migrations = migrations; this.cleanup = cleanup; this.source = source; this.target = target;
     }
 
     @GetMapping("/health")
@@ -42,6 +44,12 @@ public class MigrationConsoleController {
         var r = target.test(settings.get());
         return new ConnectionTest(r.success(), r.message(), r.detail());
     }
+
+    @PostMapping("/cleanup/preview")
+    public CleanupPreview cleanupPreview(@RequestBody CleanupRequest request) { return cleanup.preview(request); }
+
+    @PostMapping("/cleanup")
+    public CleanupResult cleanup(@RequestBody CleanupRequest request) { return cleanup.cleanup(request); }
 
     @GetMapping("/scope")
     public MigrationScopeView scope() { return migrations.migrationScope(); }
