@@ -24,7 +24,9 @@ jobs:
           java-version: '21'
           cache: maven
       - name: Apply patch
-        run: python3 scripts/apply_native_dependent_migration_patch.py
+        run: |
+          sed -i 's/!rule\.upstreamWorkflowCode()\.equals(workflowCode)/rule.upstreamWorkflowCode() != workflowCode/' scripts/apply_native_dependent_migration_patch.py
+          python3 scripts/apply_native_dependent_migration_patch.py
       - name: Verify duplicate schedule path stays removed
         run: |
           ! grep -R 'saveDevelopmentSchedule' -n src/main/java src/test/java
