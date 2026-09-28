@@ -16,7 +16,7 @@
       <el-tab-pane label="元数据分析" name="analysis">
     <section class="panel action-panel">
       <div class="section-title">
-        <div><h2>迁移操作</h2><span>正式迁移不会自动发布或上线工作流</span></div>
+        <div><h2>迁移操作</h2><span>Workflow 统一迁到 Native Scheduler；正式迁移不会自动发布、上线或启用调度</span></div>
       </div>
       <div class="action-row">
         <el-button type="primary" :loading="actionLoading" @click="startAnalyze">1. 分析元数据</el-button>

@@ -16,7 +16,6 @@ import java.util.concurrent.ConcurrentHashMap;
 public class DataSphereClient {
     private final ObjectMapper mapper;
     private final Map<String, String> sessionCookies = new ConcurrentHashMap<>();
-    private final Map<String, Long> defaultStarRocksDataSourceIds = new ConcurrentHashMap<>();
 
     public DataSphereClient(ObjectMapper mapper) { this.mapper = mapper; }
 
@@ -125,51 +124,6 @@ public class DataSphereClient {
         payload.put("parallelism", 1); payload.put("workerGroup", workerGroup == null || workerGroup.isBlank() ? "default" : workerGroup);
         payload.put("alertGroup", "");
         data(put(settings, "/api/scheduler/workflows/" + workflowId + "/schedule", payload));
-    }
-
-    public void saveDevelopmentSchedule(Settings settings, long fileId, String cycleType, String executionTime,
-                                        String cron, String timezone, String databaseName, String bizDateParam,
-                                        List<Map<String, String>> localParams, int retryTimes, int retryIntervalMinutes,
-                                        List<Long> upstreamFileIds) {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("enabled", false);
-        payload.put("cycleType", cycleType == null || cycleType.isBlank() ? "CRON" : cycleType);
-        payload.put("executionTime", executionTime == null || executionTime.isBlank() ? "00:00" : executionTime);
-        payload.put("cronExpression", cron);
-        payload.put("timezone", timezone == null || timezone.isBlank() ? "Asia/Shanghai" : timezone);
-        payload.put("dataSourceId", defaultStarRocksDataSourceId(settings));
-        payload.put("databaseName", databaseName == null || databaseName.isBlank() ? null : databaseName.trim());
-        payload.put("bizDateParam", bizDateParam == null || bizDateParam.isBlank() ? "${system.biz.date}" : bizDateParam);
-        payload.put("localParams", localParams == null ? List.of() : localParams);
-        payload.put("retryTimes", Math.max(0, Math.min(20, retryTimes)));
-        payload.put("retryIntervalMinutes", Math.max(1, Math.min(1440, retryIntervalMinutes)));
-        payload.put("timeoutMinutes", 60);
-        payload.put("upstreamFileIds", upstreamFileIds == null ? List.of() : upstreamFileIds);
-        data(put(settings, "/api/files/" + fileId + "/schedule", payload));
-    }
-
-    long defaultStarRocksDataSourceId(Settings settings) {
-        String key = sessionKey(settings);
-        Long cached = defaultStarRocksDataSourceIds.get(key);
-        if (cached != null && cached > 0) return cached;
-        JsonNode rows = data(get(settings, "/api/data-sources"));
-        if (!rows.isArray()) throw new IllegalStateException("DataSphere 数据源列表返回格式异常");
-        List<JsonNode> starRocks = new ArrayList<>();
-        rows.forEach(row -> {
-            if ("STARROCKS".equalsIgnoreCase(row.path("type").asText())) starRocks.add(row);
-        });
-        if (starRocks.isEmpty()) throw new IllegalStateException("DataSphere 未配置可用的 StarRocks 数据源，无法迁移开发任务调度");
-        JsonNode selected = starRocks.stream()
-                .filter(row -> row.path("enabled").asBoolean(true))
-                .findFirst().orElse(starRocks.getFirst());
-        long id = selected.path("id").asLong(0);
-        if (id <= 0) throw new IllegalStateException("DataSphere StarRocks 数据源缺少有效 ID");
-        defaultStarRocksDataSourceIds.put(key, id);
-        return id;
-    }
-
-    public JsonNode autoUpstreams(Settings settings, long fileId) {
-        return data(get(settings, "/api/files/" + fileId + "/schedule/auto-upstreams"));
     }
 
     public JsonNode validateWorkflow(Settings settings, long workflowId) {
