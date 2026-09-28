@@ -23,7 +23,7 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Run targeted backend tests
-        run: mvn -B -Dtest=CleanupServiceTest,MigrationServiceTest,DolphinSchedulerDependentMapperTest,DolphinScheduler319ReaderTest test
+        run: mvn -B -Dtest=CleanupServiceTest,MigrationServiceTest,DolphinSchedulerDependentMapperTest,DolphinScheduler319ReaderTest,SqlTableLineageParserTest,SqlDependencyServiceTest test
       - name: Normalize legacy npm mirror
         working-directory: frontend
         run: sed -i 's#http://mirrors.tencentyun.com/npm/#https://registry.npmjs.org/#g' package-lock.json
