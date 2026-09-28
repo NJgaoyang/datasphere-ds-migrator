@@ -12,6 +12,7 @@
 - 正式迁移目录、开发文件、Native Scheduler 工作流和 disabled 调度
 - SQL / Shell / Python / SeaTunnel Task 迁为开发文件，DolphinScheduler Workflow 统一迁为真实 DataSphere Workflow，DAG 关系保留在工作流中
 - DolphinScheduler Schedule 统一迁到 `/api/scheduler/workflows/{workflowId}/schedule`，不再写入旧 `dev_file_schedule`
+- 同一 Workflow 内依赖只迁为 DAG Edge；安全的根 `DEPENDENT` 节点迁为 disabled Native Scheduler 跨工作流依赖，不再生成“依赖 SQL”或第二份调度
 - 实时查看进度、对象、问题和事件
 - 支持取消任务、问题标记已处理、源→目标 ID 幂等映射
 

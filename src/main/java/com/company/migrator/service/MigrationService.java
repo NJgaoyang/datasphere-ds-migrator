@@ -35,6 +35,7 @@ public class MigrationService {
     private final DolphinScheduler319Reader source;
     private final DataSphereClient target;
     private final ObjectMapper mapper;
+    private final DolphinSchedulerDependentMapper dependentMapper;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
     public MigrationService(JdbcTemplate jdbc, SettingService settings,
@@ -45,6 +46,7 @@ public class MigrationService {
         this.source = source;
         this.target = target;
         this.mapper = mapper;
+        this.dependentMapper = new DolphinSchedulerDependentMapper(mapper);
     }
 
     @PreDestroy
@@ -148,18 +150,23 @@ public class MigrationService {
 
         for (WorkflowRow w : snapshot.workflows()) {
             checkCancelled(runId);
-            insertItem(runId, "WORKFLOW", String.valueOf(w.code()), w.version(), w.name(), null,
+            long itemId = insertItem(runId, "WORKFLOW", String.valueOf(w.code()), w.version(), w.name(), null,
                     "READY", w.releaseState() == 1 ? "源端已上线；目标端仍将保持 Offline" : "源端未上线", json(w));
+            DolphinSchedulerDependentMapper.Plan dependencyPlan = dependentMapper.analyze(w, snapshot.tasks(), snapshot.edges());
+            if (!dependencyPlan.supported()) {
+                issue(runId, itemId, "ERROR", "DEPENDENT_SEMANTICS_UNSUPPORTED", "WORKFLOW", String.valueOf(w.code()), w.name(),
+                        "DEPENDENT 无法无损迁移", dependencyPlan.message());
+            }
             progress(runId, ++processed, total, "ANALYZE_WORKFLOW", "分析工作流：" + w.name());
         }
 
         for (TaskRow t : uniqueTasks.values()) {
             checkCancelled(runId);
             String type = normalizeType(t.taskType());
-            boolean auto = AUTO_TASK_TYPES.contains(type);
+            boolean auto = AUTO_TASK_TYPES.contains(type) || "DEPENDENT".equals(type);
             long itemId = insertItem(runId, "TASK", String.valueOf(t.code()), t.version(), t.name(), type,
                     auto ? "READY" : "MANUAL_REQUIRED",
-                    auto ? "可自动迁移" : "当前版本需人工处理该任务类型", json(t));
+                    auto ? ("DEPENDENT".equals(type) ? "将迁为 Native Scheduler 工作流依赖，不创建执行节点" : "可自动迁移") : "当前版本需人工处理该任务类型", json(t));
             inspectTaskIssues(runId, itemId, t, type, auto);
             progress(runId, ++processed, total, "ANALYZE_TASK", "分析任务：" + t.name());
         }
@@ -295,7 +302,7 @@ public class MigrationService {
             if (snapshot.workflows().isEmpty()) throw new IllegalStateException("选择范围内没有可迁移工作流");
             event(runId, "INFO", "SCOPE", migrateAll
                     ? "迁移范围：全部工作流"
-                    : "迁移范围：手工选择 " + requestedWorkflowCount + " 个，自动包含 SQL 上游 " + autoIncludedUpstreams + " 个，共 " + snapshot.workflows().size() + " 个工作流");
+                    : "迁移范围：手工选择 " + requestedWorkflowCount + " 个，自动包含 SQL/DEPENDENT 上游 " + autoIncludedUpstreams + " 个，共 " + snapshot.workflows().size() + " 个工作流");
             if (dryRun) {
                 dryRun(runId, snapshot);
                 return;
@@ -334,6 +341,14 @@ public class MigrationService {
             Long workflowCode = queue.removeFirst();
             WorkflowRow workflow = workflowsByCode.get(workflowCode);
             if (workflow == null) continue;
+            DolphinSchedulerDependentMapper.Plan dependencyPlan = dependentMapper.analyze(workflow, snapshot.tasks(), snapshot.edges());
+            if (dependencyPlan.supported()) {
+                for (DolphinSchedulerDependentMapper.Rule rule : dependencyPlan.rules()) {
+                    if (rule.upstreamWorkflowCode() != workflowCode && expanded.add(rule.upstreamWorkflowCode())) {
+                        queue.addLast(rule.upstreamWorkflowCode());
+                    }
+                }
+            }
             for (TaskRow task : workflowTasks(workflow, snapshot.tasks())) {
                 if (!"SQL".equals(normalizeType(task.taskType()))) continue;
                 String sql = taskSql(task);
@@ -402,17 +417,18 @@ public class MigrationService {
         }
         for (TaskRow t : tasks.values()) {
             String type = normalizeType(t.taskType());
-            boolean auto = AUTO_TASK_TYPES.contains(type);
+            boolean auto = AUTO_TASK_TYPES.contains(type) || "DEPENDENT".equals(type);
             long itemId = insertItem(runId, "TASK", String.valueOf(t.code()), t.version(), t.name(), type,
-                    auto ? "DRY_RUN_OK" : "MANUAL_REQUIRED", auto ? "将创建/复用开发文件" : "任务类型需人工处理", json(t));
+                    auto ? "DRY_RUN_OK" : "MANUAL_REQUIRED", auto ? ("DEPENDENT".equals(type) ? "将迁为 disabled 工作流依赖，不创建执行节点" : "将创建/复用开发文件") : "任务类型需人工处理", json(t));
             inspectTaskIssues(runId, itemId, t, type, auto);
             progress(runId, ++processed, total, "DRY_RUN", t.name());
         }
         for (WorkflowRow w : snapshot.workflows()) {
-            boolean supported = workflowSupported(w, snapshot.tasks());
+            boolean supported = workflowSupported(w, snapshot.tasks(), snapshot.edges());
+            DolphinSchedulerDependentMapper.Plan dependencyPlan = dependentMapper.analyze(w, snapshot.tasks(), snapshot.edges());
             String message = supported
-                    ? "将创建/复用 Native Scheduler 工作流并保持 Draft/Offline"
-                    : "包含暂不支持的任务类型";
+                    ? (dependencyPlan.hasDependency() ? "将创建/复用 Native Scheduler 工作流，并把根 DEPENDENT 迁为 disabled 工作流依赖" : "将创建/复用 Native Scheduler 工作流并保持 Draft/Offline")
+                    : dependencyPlan.supported() ? "包含暂不支持的任务类型" : "DEPENDENT 无法无损迁移：" + dependencyPlan.message();
             insertItem(runId, "WORKFLOW", String.valueOf(w.code()), w.version(), w.name(), null,
                     supported ? "DRY_RUN_OK" : "BLOCKED", message, json(w));
             progress(runId, ++processed, total, "DRY_RUN", w.name());
@@ -444,9 +460,17 @@ public class MigrationService {
         }
 
         Map<String, Long> fileByTask = new LinkedHashMap<>();
+        Map<Long, Long> dependencyTaskItemIds = new LinkedHashMap<>();
         for (TaskRow t : tasks.values()) {
             checkCancelled(runId);
             String type = normalizeType(t.taskType());
+            if ("DEPENDENT".equals(type)) {
+                long itemId = insertItem(runId, "TASK", String.valueOf(t.code()), t.version(), t.name(), type,
+                        "RUNNING", "等待工作流创建后迁为 disabled Native Scheduler 工作流依赖", json(t));
+                dependencyTaskItemIds.put(t.code(), itemId);
+                progress(runId, ++processed, total, "MIGRATE_TASK", t.name());
+                continue;
+            }
             if (!AUTO_TASK_TYPES.contains(type)) {
                 long itemId = insertItem(runId, "TASK", String.valueOf(t.code()), t.version(), t.name(), type,
                         "MANUAL_REQUIRED", "暂不自动迁移该任务类型", json(t));
@@ -477,7 +501,7 @@ public class MigrationService {
         for (WorkflowRow w : snapshot.workflows()) {
             checkCancelled(runId);
             long itemId = insertItem(runId, "WORKFLOW", String.valueOf(w.code()), w.version(), w.name(), null, "RUNNING", "创建工作流", json(w));
-            if (!workflowSupported(w, snapshot.tasks())) {
+            if (!workflowSupported(w, snapshot.tasks(), snapshot.edges())) {
                 finishItem(itemId, "BLOCKED", null, null, "包含暂不支持的任务，未创建工作流");
                 progress(runId, ++processed, total, "MIGRATE_WORKFLOW", w.name());
                 continue;
@@ -498,6 +522,40 @@ public class MigrationService {
             finishItem(itemId, "SUCCESS", "WORKFLOW", String.valueOf(workflowId),
                     "工作流已创建并校验，保持 Draft/Offline：" + validation.toString());
             progress(runId, ++processed, total, "MIGRATE_WORKFLOW", w.name());
+        }
+
+        Map<Long, String> workflowTargetCodes = new LinkedHashMap<>();
+        for (Map.Entry<Long, Long> entry : workflowTargetIds.entrySet()) {
+            workflowTargetCodes.put(entry.getKey(), target.workflowCode(s, entry.getValue()));
+        }
+        for (WorkflowRow w : snapshot.workflows()) {
+            DolphinSchedulerDependentMapper.Plan dependencyPlan = dependentMapper.analyze(w, snapshot.tasks(), snapshot.edges());
+            if (!dependencyPlan.supported() || !dependencyPlan.hasDependency()) continue;
+            Long dependencyItemId = dependencyTaskItemIds.get(dependencyPlan.dependentTaskCode());
+            String downstreamCode = workflowTargetCodes.get(w.code());
+            if (downstreamCode == null) continue;
+            boolean dependencyFailed = false;
+            for (DolphinSchedulerDependentMapper.Rule rule : dependencyPlan.rules()) {
+                String upstreamCode = workflowTargetCodes.get(rule.upstreamWorkflowCode());
+                if (upstreamCode == null) {
+                    dependencyFailed = true;
+                    if (dependencyItemId != null) {
+                        issue(runId, dependencyItemId, "ERROR", "DEPENDENT_UPSTREAM_NOT_MIGRATED", "TASK",
+                                String.valueOf(dependencyPlan.dependentTaskCode()), w.name(),
+                                "上游工作流未成功迁移：" + rule.upstreamWorkflowCode(), "依赖未写入，避免产生错误调度语义");
+                    }
+                    continue;
+                }
+                target.saveWorkflowDependency(s, downstreamCode, upstreamCode, false,
+                        rule.businessDateOffsetDays(), 3600);
+                event(runId, "INFO", "MIGRATE_DEPENDENCY", w.name() + " <- " + rule.upstreamWorkflowCode() +
+                        " · 业务日期偏移=" + rule.businessDateOffsetDays() + " · disabled");
+            }
+            if (dependencyItemId != null) {
+                if (dependencyFailed) finishItem(dependencyItemId, "BLOCKED", null, null, "存在未迁移的上游工作流，依赖未完整写入");
+                else finishItem(dependencyItemId, "SUCCESS", "WORKFLOW_DEPENDENCY", downstreamCode,
+                        "DEPENDENT 已迁为 disabled Native Scheduler 工作流依赖，不创建 SQL/执行节点");
+            }
         }
 
         for (ScheduleRow schedule : snapshot.schedules()) {
@@ -527,9 +585,12 @@ public class MigrationService {
     private Map<String, Object> workflowPayload(WorkflowRow w, Snapshot snapshot, Map<String, Long> fileByTask) {
         List<TaskRow> tasks = snapshot.tasks().stream()
                 .filter(t -> t.workflowCode() == w.code() && t.workflowVersion() == w.version()).toList();
+        DolphinSchedulerDependentMapper.Plan dependencyPlan = dependentMapper.analyze(w, snapshot.tasks(), snapshot.edges());
+        Long dependencyTaskCode = dependencyPlan.supported() ? dependencyPlan.dependentTaskCode() : null;
         Map<Long, int[]> positions = parseLocations(w.locations());
         List<Map<String, Object>> nodes = new ArrayList<>();
         for (TaskRow t : tasks) {
+            if (dependentMapper.isDependent(t)) continue;
             Map<String, Object> node = new LinkedHashMap<>();
             node.put("name", t.name());
             node.put("nodeType", normalizeType(t.taskType()));
@@ -543,6 +604,7 @@ public class MigrationService {
         List<Map<String, Object>> edges = new ArrayList<>();
         for (EdgeRow e : snapshot.edges()) {
             if (e.workflowCode() != w.code() || e.workflowVersion() != w.version() || e.preTaskCode() == 0) continue;
+            if (dependencyTaskCode != null && (e.preTaskCode() == dependencyTaskCode || e.postTaskCode() == dependencyTaskCode)) continue;
             Map<String, Object> edge = new LinkedHashMap<>();
             edge.put("sourceNodeId", null); edge.put("targetNodeId", null);
             edge.put("sourceNodeCode", "DS319_" + e.preTaskCode());
@@ -645,11 +707,18 @@ public class MigrationService {
     }
 
     boolean workflowSupported(WorkflowRow w, List<TaskRow> tasks) {
+        return workflowSupported(w, tasks, List.of());
+    }
+
+    boolean workflowSupported(WorkflowRow w, List<TaskRow> tasks, List<EdgeRow> edges) {
         List<TaskRow> workflowTasks = tasks.stream()
                 .filter(t -> t.workflowCode() == w.code() && t.workflowVersion() == w.version())
                 .toList();
-        return !workflowTasks.isEmpty()
-                && workflowTasks.stream().allMatch(t -> AUTO_TASK_TYPES.contains(normalizeType(t.taskType())));
+        if (workflowTasks.isEmpty()) return false;
+        boolean taskTypesSupported = workflowTasks.stream().allMatch(t ->
+                AUTO_TASK_TYPES.contains(normalizeType(t.taskType())) || dependentMapper.isDependent(t));
+        if (!taskTypesSupported) return false;
+        return dependentMapper.analyze(w, tasks, edges).supported();
     }
 
     private long createRun(String operation, boolean dryRun, String status, String phase, String message) {

@@ -107,6 +107,13 @@ public class DataSphereClient {
         }
     }
 
+    public String workflowCode(Settings settings, long workflowId) {
+        JsonNode row = data(get(settings, "/api/workflows/" + workflowId));
+        String code = row.path("workflowCode").asText("").trim();
+        if (code.isBlank()) throw new IllegalStateException("DataSphere Workflow #" + workflowId + " 未返回 workflowCode");
+        return code;
+    }
+
     public String workflowStatus(Settings settings, long workflowId) {
         JsonNode row = data(get(settings, "/api/workflows/" + workflowId));
         return row.path("status").asText("");
@@ -124,6 +131,17 @@ public class DataSphereClient {
         payload.put("parallelism", 1); payload.put("workerGroup", workerGroup == null || workerGroup.isBlank() ? "default" : workerGroup);
         payload.put("alertGroup", "");
         data(put(settings, "/api/scheduler/workflows/" + workflowId + "/schedule", payload));
+    }
+
+    public void saveWorkflowDependency(Settings settings, String downstreamWorkflowCode, String upstreamWorkflowCode,
+                                       boolean enabled, int businessDateOffsetDays, int timeoutSeconds) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("downstreamWorkflowCode", downstreamWorkflowCode);
+        payload.put("upstreamWorkflowCode", upstreamWorkflowCode);
+        payload.put("enabled", enabled);
+        payload.put("businessDateOffsetDays", businessDateOffsetDays);
+        payload.put("timeoutSeconds", timeoutSeconds);
+        data(post(settings, "/api/scheduler/dependencies", payload));
     }
 
     public JsonNode validateWorkflow(Settings settings, long workflowId) {
