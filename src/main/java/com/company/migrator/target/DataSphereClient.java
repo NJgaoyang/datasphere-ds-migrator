@@ -77,6 +77,10 @@ public class DataSphereClient {
         return data(get(settings, "/api/files/" + fileId)).path("lifecycleStatus").asText("");
     }
 
+    public void offlineFile(Settings settings, long fileId) {
+        data(post(settings, "/api/files/" + fileId + "/offline", Map.of()));
+    }
+
     public void deleteFile(Settings settings, long fileId) {
         request(settings).delete().uri("/api/files/" + fileId).retrieve().toBodilessEntity();
     }
