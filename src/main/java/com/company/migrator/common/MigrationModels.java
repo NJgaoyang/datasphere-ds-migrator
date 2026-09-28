@@ -43,6 +43,10 @@ public final class MigrationModels {
             boolean success, int deletedDevelopmentTasks, int deletedRecycledDevelopmentTasks,
             int deletedWorkflows, int failureCount, List<CleanupFailure> failures, String message) { }
 
+    public record OfflineResult(
+            boolean success, int offlinedDevelopmentTasks, int skippedDevelopmentTasks,
+            int failureCount, List<CleanupFailure> failures, String message) { }
+
     public record MigrationScopeView(int projectCount, int workflowCount, int taskCount, List<ProjectScopeView> projects) { }
     public record ProjectScopeView(long projectCode, String projectName, int workflowCount, int taskCount, List<WorkflowScopeView> workflows) { }
     public record WorkflowScopeView(long workflowCode, int workflowVersion, String workflowName, boolean online, int taskCount, List<String> taskTypes) { }
