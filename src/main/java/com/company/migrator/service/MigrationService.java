@@ -408,21 +408,18 @@ public class MigrationService {
             inspectTaskIssues(runId, itemId, t, type, auto);
             progress(runId, ++processed, total, "DRY_RUN", t.name());
         }
-        Map<String, Long> taskWorkflowUseCounts = taskWorkflowUseCounts(snapshot.tasks());
         for (WorkflowRow w : snapshot.workflows()) {
             boolean supported = workflowSupported(w, snapshot.tasks());
-            List<TaskRow> workflowTasks = workflowTasks(w, snapshot.tasks());
-            boolean developmentOnly = isDevelopmentOnlyWorkflow(workflowTasks, taskWorkflowUseCounts);
-            String message = !supported ? "包含暂不支持的任务类型"
-                    : developmentOnly ? "纯 SQL 流程（" + workflowTasks.size() + " 个节点）将直接映射为数据开发任务流，不再创建重复编排工作流"
-                    : "将创建/复用编排工作流并保持 Offline";
+            String message = supported
+                    ? "将创建/复用 Native Scheduler 工作流并保持 Draft/Offline"
+                    : "包含暂不支持的任务类型";
             insertItem(runId, "WORKFLOW", String.valueOf(w.code()), w.version(), w.name(), null,
                     supported ? "DRY_RUN_OK" : "BLOCKED", message, json(w));
             progress(runId, ++processed, total, "DRY_RUN", w.name());
         }
         for (ScheduleRow s : snapshot.schedules()) {
             insertItem(runId, "SCHEDULE", String.valueOf(s.id()), 0, "Schedule → " + s.workflowCode(), null,
-                    "DRY_RUN_OK", "将保存为 disabled Workflow Schedule", json(s));
+                    "DRY_RUN_OK", "将保存为 disabled Native Scheduler Workflow Schedule", json(s));
             progress(runId, ++processed, total, "DRY_RUN", s.crontab());
         }
         completeRun(runId, "试运行完成，未修改 DataSphere");
@@ -475,61 +472,13 @@ public class MigrationService {
         }
 
         Map<Long, ScheduleRow> scheduleByWorkflow = primarySchedules(snapshot.schedules());
-        for (WorkflowRow w : snapshot.workflows()) {
-            ScheduleRow schedule = scheduleByWorkflow.get(w.code());
-            if (schedule == null) continue;
-            CronDisplay display = cronDisplay(schedule.crontab());
-            for (TaskRow t : workflowTasks(w, snapshot.tasks())) {
-                if (!"SQL".equals(normalizeType(t.taskType()))) continue;
-                Long fileId = fileByTask.get(taskKey(t.code(), t.version()));
-                if (fileId == null) continue;
-                List<Map<String, String>> localParams = mergedParams(w, t);
-                List<Long> explicitUpstreams = upstreamFileIds(w, t, snapshot.edges(), fileByTask);
-                AutoUpstreamResolution auto = autoDetectedUpstreams(s, fileId);
-                LinkedHashSet<Long> mergedUpstreams = new LinkedHashSet<>(explicitUpstreams);
-                auto.fileIds().stream().filter(id -> id != fileId).forEach(mergedUpstreams::add);
-                List<Long> upstreams = new ArrayList<>(mergedUpstreams);
-                target.saveDevelopmentSchedule(s, fileId, display.cycleType(), display.executionTime(),
-                        schedule.crontab(), schedule.timezone(), sourceDatabaseName(s, t), businessDateParam(localParams), localParams,
-                        t.retryTimes(), t.retryIntervalMinutes(), upstreams);
-                event(runId, "INFO", "MIGRATE_TASK_SCHEDULE", t.name() + " · " + schedule.crontab() +
-                        " · 参数=" + localParams.size() + " · 上游=" + upstreams.size() +
-                        "（DAG=" + explicitUpstreams.size() + "，SQL血缘=" + auto.fileIds().size() +
-                        "，未匹配表=" + auto.unmatchedTables().size() + "）");
-            }
-        }
 
         Map<Long, Long> workflowTargetIds = new LinkedHashMap<>();
-        Map<Long, List<Long>> developmentWorkflowFileIds = new LinkedHashMap<>();
-        Map<String, Long> taskWorkflowUseCounts = taskWorkflowUseCounts(snapshot.tasks());
         for (WorkflowRow w : snapshot.workflows()) {
             checkCancelled(runId);
             long itemId = insertItem(runId, "WORKFLOW", String.valueOf(w.code()), w.version(), w.name(), null, "RUNNING", "创建工作流", json(w));
             if (!workflowSupported(w, snapshot.tasks())) {
                 finishItem(itemId, "BLOCKED", null, null, "包含暂不支持的任务，未创建工作流");
-                progress(runId, ++processed, total, "MIGRATE_WORKFLOW", w.name());
-                continue;
-            }
-            List<TaskRow> workflowTasks = workflowTasks(w, snapshot.tasks());
-            if (isDevelopmentOnlyWorkflow(workflowTasks, taskWorkflowUseCounts)) {
-                List<Long> fileIds = workflowTasks.stream()
-                        .map(t -> fileByTask.get(taskKey(t.code(), t.version())))
-                        .filter(Objects::nonNull)
-                        .toList();
-                if (fileIds.size() != workflowTasks.size()) {
-                    finishItem(itemId, "BLOCKED", null, null, "纯 SQL 流程存在未成功迁移的数据开发任务，无法建立任务流映射");
-                    progress(runId, ++processed, total, "MIGRATE_WORKFLOW", w.name());
-                    continue;
-                }
-                cleanupLegacyDevelopmentWorkflow(runId, itemId, s, w);
-                developmentWorkflowFileIds.put(w.code(), fileIds);
-                if (fileIds.size() == 1) {
-                    saveMap("WORKFLOW", String.valueOf(w.code()), w.version(), "DEV_FILE", String.valueOf(fileIds.getFirst()), w.name());
-                } else {
-                    deleteMap("WORKFLOW", String.valueOf(w.code()), w.version(), "DEV_FILE");
-                }
-                finishItem(itemId, "SUCCESS", "DEV_FLOW", null,
-                        "纯 SQL 流程已映射为 " + fileIds.size() + " 个数据开发任务及其 DAG 依赖，不创建重复编排工作流");
                 progress(runId, ++processed, total, "MIGRATE_WORKFLOW", w.name());
                 continue;
             }
@@ -556,27 +505,23 @@ public class MigrationService {
             long itemId = insertItem(runId, "SCHEDULE", String.valueOf(schedule.id()), 0,
                     "Schedule → " + schedule.workflowCode(), null, "RUNNING", "保存调度配置", json(schedule));
             Long workflowId = workflowTargetIds.get(schedule.workflowCode());
-            List<Long> developmentFileIds = developmentWorkflowFileIds.get(schedule.workflowCode());
             ScheduleRow selected = scheduleByWorkflow.get(schedule.workflowCode());
             if (selected == null || selected.id() != schedule.id()) {
                 finishItem(itemId, "SKIPPED", null, null, "同一工作流存在多条调度，已优先选择已发布且较新的调度");
                 issue(runId, itemId, "WARN", "MULTIPLE_SCHEDULES", "SCHEDULE", String.valueOf(schedule.id()),
                         "Schedule → " + schedule.workflowCode(), "检测到同一工作流多条调度",
                         "已优先迁移 release_state=1 且 ID 较新的调度，请人工确认其余调度。");
-            } else if (developmentFileIds != null) {
-                finishItem(itemId, "SUCCESS", "DEV_FLOW_SCHEDULE", null,
-                        "纯 SQL 流程调度已保存到 " + developmentFileIds.size() + " 个数据开发任务，DAG 依赖保持一致且均为 disabled");
             } else if (workflowId == null) {
                 finishItem(itemId, "BLOCKED", null, null, "对应工作流未迁移，跳过调度");
             } else {
                 target.saveSchedule(s, workflowId, schedule.crontab(), schedule.timezone(), schedule.failureStrategy(), schedule.workerGroup());
                 finishItem(itemId, "SUCCESS", "WORKFLOW_SCHEDULE", String.valueOf(workflowId),
-                        "工作流调度已保存；数据开发 SQL 任务同步继承 Cron、参数与 DAG 依赖，均保持 disabled");
+                        "Native Scheduler 工作流调度已保存并保持 disabled，未自动切生产");
             }
             progress(runId, ++processed, total, "MIGRATE_SCHEDULE", schedule.crontab());
         }
         cleanupStaleTaskMappings(runId, s, staleTaskCodes);
-        completeRun(runId, "迁移完成；所有新工作流和调度保持 Offline，未自动切生产");
+        completeRun(runId, "迁移完成；DolphinScheduler Workflow 已落为 Native Scheduler 工作流，全部保持 Draft/Offline，调度保持 disabled，未自动切生产");
     }
 
     private Map<String, Object> workflowPayload(WorkflowRow w, Snapshot snapshot, Map<String, Long> fileByTask) {
@@ -648,47 +593,6 @@ public class MigrationService {
         return tasks.stream().filter(t -> t.workflowCode() == workflow.code() && t.workflowVersion() == workflow.version()).toList();
     }
 
-    private Map<String, Long> taskWorkflowUseCounts(List<TaskRow> tasks) {
-        return tasks.stream().collect(Collectors.groupingBy(
-                t -> taskKey(t.code(), t.version()), LinkedHashMap::new, Collectors.counting()));
-    }
-
-    boolean isDevelopmentOnlyWorkflow(List<TaskRow> workflowTasks, Map<String, Long> taskWorkflowUseCounts) {
-        if (workflowTasks.isEmpty()) return false;
-        return workflowTasks.stream().allMatch(task ->
-                "SQL".equals(normalizeType(task.taskType()))
-                        && taskWorkflowUseCounts.getOrDefault(taskKey(task.code(), task.version()), 0L) == 1L);
-    }
-
-    private void cleanupLegacyDevelopmentWorkflow(long runId, long itemId, Settings settings, WorkflowRow workflow) {
-        List<LegacyWorkflowMap> oldMappings = jdbc.query(
-                "SELECT source_version,target_id FROM migration_object_map " +
-                        "WHERE source_type='WORKFLOW' AND source_code=? AND target_type='WORKFLOW' ORDER BY source_version",
-                (rs, n) -> new LegacyWorkflowMap(rs.getInt(1), Long.parseLong(rs.getString(2))),
-                String.valueOf(workflow.code()));
-        for (LegacyWorkflowMap mapping : oldMappings) {
-            long oldWorkflowId = mapping.targetId();
-            if (!target.workflowExists(settings, oldWorkflowId)) {
-                deleteMap("WORKFLOW", String.valueOf(workflow.code()), mapping.sourceVersion(), "WORKFLOW");
-                continue;
-            }
-            String status = target.workflowStatus(settings, oldWorkflowId);
-            if ("DRAFT".equalsIgnoreCase(status)) {
-                target.deleteWorkflow(settings, oldWorkflowId);
-                deleteMap("WORKFLOW", String.valueOf(workflow.code()), mapping.sourceVersion(), "WORKFLOW");
-                event(runId, "INFO", "CLEAN_DUPLICATE_WORKFLOW", workflow.name() +
-                        " · 已清理旧的纯 SQL 草稿编排工作流 v" + mapping.sourceVersion() + " #" + oldWorkflowId);
-                continue;
-            }
-            issue(runId, itemId, "WARN", "DEVELOPMENT_ONLY_WORKFLOW_ALREADY_PUBLISHED", "WORKFLOW",
-                    String.valueOf(workflow.code()), workflow.name(), "旧的纯 SQL 编排工作流已不是草稿，未自动删除",
-                    "源版本=" + mapping.sourceVersion() + "，目标 Workflow #" + oldWorkflowId + " 状态=" + status +
-                            "，请确认后人工清理。数据开发任务流已作为后续迁移目标。");
-        }
-    }
-
-    private record LegacyWorkflowMap(int sourceVersion, long targetId) { }
-
     private Map<Long, ScheduleRow> primarySchedules(List<ScheduleRow> schedules) {
         Map<Long, ScheduleRow> selected = new LinkedHashMap<>();
         for (ScheduleRow candidate : schedules) {
@@ -700,35 +604,6 @@ public class MigrationService {
         }
         return selected;
     }
-
-    private List<Long> upstreamFileIds(WorkflowRow workflow, TaskRow task, List<EdgeRow> edges, Map<String, Long> fileByTask) {
-        LinkedHashSet<Long> result = new LinkedHashSet<>();
-        for (EdgeRow edge : edges) {
-            if (edge.workflowCode() != workflow.code() || edge.workflowVersion() != workflow.version()) continue;
-            if (edge.preTaskCode() == 0 || edge.postTaskCode() != task.code() || edge.postTaskVersion() != task.version()) continue;
-            Long upstream = fileByTask.get(taskKey(edge.preTaskCode(), edge.preTaskVersion()));
-            if (upstream != null) result.add(upstream);
-        }
-        return new ArrayList<>(result);
-    }
-
-    private AutoUpstreamResolution autoDetectedUpstreams(Settings settings, long fileId) {
-        JsonNode result = target.autoUpstreams(settings, fileId);
-        LinkedHashSet<Long> fileIds = new LinkedHashSet<>();
-        JsonNode matches = result.path("matches");
-        if (matches.isArray()) {
-            for (JsonNode match : matches) {
-                long upstreamFileId = match.path("fileId").asLong(0);
-                if (upstreamFileId > 0 && upstreamFileId != fileId) fileIds.add(upstreamFileId);
-            }
-        }
-        List<String> unmatched = new ArrayList<>();
-        JsonNode unmatchedTables = result.path("unmatchedTables");
-        if (unmatchedTables.isArray()) unmatchedTables.forEach(node -> unmatched.add(node.asText()));
-        return new AutoUpstreamResolution(new ArrayList<>(fileIds), unmatched);
-    }
-
-    private record AutoUpstreamResolution(List<Long> fileIds, List<String> unmatchedTables) { }
 
     private List<Map<String, String>> mergedParams(WorkflowRow workflow, TaskRow task) {
         LinkedHashMap<String, String> values = new LinkedHashMap<>();
@@ -750,55 +625,6 @@ public class MigrationService {
             values.put(key, param.path("value").asText(""));
         }
     }
-
-    private String sourceDatabaseName(Settings settings, TaskRow task) {
-        JsonNode params = source.parseTaskParams(task);
-        long datasourceId = params.path("datasource").asLong(0);
-        if (datasourceId <= 0) return "";
-        try { return source.datasourceDatabase(settings, datasourceId); }
-        catch (Exception ex) { return ""; }
-    }
-
-    private String businessDateParam(List<Map<String, String>> params) {
-        List<String> preferred = List.of("biz_date", "bizdate", "business_date", "businessdate", "dt", "date");
-        for (String key : preferred) {
-            for (Map<String, String> param : params) {
-                if (!key.equalsIgnoreCase(param.get("key"))) continue;
-                String value = param.getOrDefault("value", "");
-                if (isDynamicBusinessDate(value)) return value;
-            }
-        }
-        return "${system.biz.date}";
-    }
-
-    private boolean isDynamicBusinessDate(String value) {
-        if (value == null) return false;
-        String normalized = value.trim().toLowerCase(Locale.ROOT);
-        return normalized.contains("system.biz") || normalized.startsWith("$[");
-    }
-
-    private CronDisplay cronDisplay(String cron) {
-        String[] fields = cron == null ? new String[0] : cron.trim().split("\\s+");
-        if (fields.length < 6) return new CronDisplay("CRON", "00:00");
-        Integer minute = cronNumber(fields[1], 0, 59);
-        Integer hour = cronNumber(fields[2], 0, 23);
-        String dayOfMonth = fields[3], month = fields[4], dayOfWeek = fields[5];
-        String executionTime = hour == null || minute == null ? "00:00" : String.format(Locale.ROOT, "%02d:%02d", hour, minute);
-        boolean everyday = "*".equals(month) && (("*".equals(dayOfMonth) && "?".equals(dayOfWeek))
-                || ("?".equals(dayOfMonth) && "*".equals(dayOfWeek)));
-        if (minute != null && "*".equals(fields[2]) && everyday) return new CronDisplay("HOURLY", String.format(Locale.ROOT, "00:%02d", minute));
-        if (hour != null && minute != null && everyday) return new CronDisplay("DAILY", executionTime);
-        if (hour != null && minute != null && "?".equals(dayOfMonth) && !"*".equals(dayOfWeek) && !"?".equals(dayOfWeek)) return new CronDisplay("WEEKLY", executionTime);
-        if (hour != null && minute != null && cronNumber(dayOfMonth, 1, 31) != null && "?".equals(dayOfWeek)) return new CronDisplay("MONTHLY", executionTime);
-        return new CronDisplay("CRON", executionTime);
-    }
-
-    private Integer cronNumber(String value, int min, int max) {
-        try { int number = Integer.parseInt(value); return number >= min && number <= max ? number : null; }
-        catch (Exception ignored) { return null; }
-    }
-
-    private record CronDisplay(String cycleType, String executionTime) { }
 
     private Map<Long, int[]> parseLocations(String raw) {
         Map<Long, int[]> result = new HashMap<>();

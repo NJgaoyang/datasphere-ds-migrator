@@ -1,12 +1,12 @@
 package com.company.migrator.service;
 
 import com.company.migrator.source.DolphinScheduler319Reader.TaskRow;
+import com.company.migrator.source.DolphinScheduler319Reader.WorkflowRow;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -20,33 +20,29 @@ class MigrationServiceTest {
     }
 
     @Test
-    void pureSqlWorkflowWithMultipleUniqueTasksUsesDevelopmentFlow() {
-        TaskRow first = task(100, 1, "SQL");
-        TaskRow second = task(101, 1, "SQL");
-        assertTrue(service.isDevelopmentOnlyWorkflow(
-                List.of(first, second),
-                Map.of("100:1", 1L, "101:1", 1L)));
+    void pureSqlWorkflowIsSupportedAsNativeWorkflow() {
+        WorkflowRow workflow = workflow();
+        assertTrue(service.workflowSupported(workflow, List.of(task(100, 1, "SQL"), task(101, 1, "SQL"))));
     }
 
     @Test
-    void mixedTaskWorkflowKeepsOrchestrationWorkflow() {
-        assertFalse(service.isDevelopmentOnlyWorkflow(
-                List.of(task(100, 1, "SQL"), task(101, 1, "SHELL")),
-                Map.of("100:1", 1L, "101:1", 1L)));
+    void mixedSupportedTasksUseNativeWorkflow() {
+        WorkflowRow workflow = workflow();
+        assertTrue(service.workflowSupported(workflow, List.of(task(100, 1, "SQL"), task(101, 1, "SHELL"), task(102, 1, "PYTHON"))));
     }
-
 
     @Test
     void workflowWithoutResolvedTasksIsNotSupported() {
-        var workflow = new com.company.migrator.source.DolphinScheduler319Reader.WorkflowRow(900, 1, "wf", null, 800, 1, null, null);
-        assertFalse(service.workflowSupported(workflow, List.of()));
+        assertFalse(service.workflowSupported(workflow(), List.of()));
     }
 
     @Test
-    void sharedSqlTaskKeepsOrchestrationWorkflow() {
-        assertFalse(service.isDevelopmentOnlyWorkflow(
-                List.of(task(100, 1, "SQL")),
-                Map.of("100:1", 2L)));
+    void unsupportedTaskBlocksWorkflowMigration() {
+        assertFalse(service.workflowSupported(workflow(), List.of(task(100, 1, "SUB_PROCESS"))));
+    }
+
+    private WorkflowRow workflow() {
+        return new WorkflowRow(900, 1, "wf", null, 800, 1, null, null);
     }
 
     private TaskRow task(long code, int version, String type) {
