@@ -8,7 +8,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -48,7 +47,7 @@ class CleanupServiceTest {
     }
 
     @Test
-    void keepsMappingWhenDevelopmentTaskIsStillOnline() {
+    void cleanupAutomaticallyOfflinesOnlineDevelopmentTaskBeforeDeletingIt() {
         JdbcTemplate jdbc = jdbc("cleanup_online");
         jdbc.update("INSERT INTO migration_object_map(source_type,source_code,source_version,target_type,target_id,target_name) VALUES('TASK','200',1,'DEV_FILE','21','sql_a')");
         SettingService settings = mock(SettingService.class);
@@ -59,10 +58,45 @@ class CleanupServiceTest {
         CleanupService service = new CleanupService(jdbc, settings, target);
 
         var result = service.cleanup(new CleanupRequest(true, false));
-        assertFalse(result.success());
-        assertEquals(1, result.failureCount());
-        assertTrue(result.failures().getFirst().message().contains("ONLINE"));
-        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM migration_object_map", Integer.class));
+        assertTrue(result.success());
+        assertEquals(1, result.deletedDevelopmentTasks());
+        assertEquals(0, result.failureCount());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM migration_object_map", Integer.class));
+
+        var ordered = inOrder(target);
+        ordered.verify(target).fileExists(targetSettings(), 21L);
+        ordered.verify(target).fileLifecycleStatus(targetSettings(), 21L);
+        ordered.verify(target).offlineFile(targetSettings(), 21L);
+        ordered.verify(target).deleteFile(targetSettings(), 21L);
+    }
+
+    @Test
+    void oneClickOfflineOnlyOfflinesOnlineMappedDevelopmentTasksAndKeepsMappings() {
+        JdbcTemplate jdbc = jdbc("offline_development");
+        jdbc.update("INSERT INTO migration_object_map(source_type,source_code,source_version,target_type,target_id,target_name) VALUES('TASK','200',1,'DEV_FILE','21','sql_online')");
+        jdbc.update("INSERT INTO migration_object_map(source_type,source_code,source_version,target_type,target_id,target_name) VALUES('TASK','201',1,'DEV_FILE','22','sql_offline')");
+        SettingService settings = mock(SettingService.class);
+        when(settings.get()).thenReturn(targetSettings());
+        DataSphereClient target = mock(DataSphereClient.class);
+        when(target.fileExists(targetSettings(), 21L)).thenReturn(true);
+        when(target.fileExists(targetSettings(), 22L)).thenReturn(true);
+        when(target.fileLifecycleStatus(targetSettings(), 21L)).thenReturn("ONLINE");
+        when(target.fileLifecycleStatus(targetSettings(), 22L)).thenReturn("OFFLINE");
+        CleanupService service = new CleanupService(jdbc, settings, target);
+
+        var result = service.offlineDevelopment();
+        assertTrue(result.success());
+        assertEquals(1, result.offlinedDevelopmentTasks());
+        assertEquals(1, result.skippedDevelopmentTasks());
+        assertEquals(0, result.failureCount());
+        assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM migration_object_map", Integer.class));
+
+        var ordered = inOrder(target);
+        ordered.verify(target).fileExists(targetSettings(), 21L);
+        ordered.verify(target).fileLifecycleStatus(targetSettings(), 21L);
+        ordered.verify(target).offlineFile(targetSettings(), 21L);
+        ordered.verify(target).fileExists(targetSettings(), 22L);
+        ordered.verify(target).fileLifecycleStatus(targetSettings(), 22L);
     }
 
     private JdbcTemplate jdbc(String db) {
