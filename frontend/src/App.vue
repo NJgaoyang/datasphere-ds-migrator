@@ -124,6 +124,9 @@
       </div>
     </section>
       </el-tab-pane>
+      <el-tab-pane label="数据清理" name="cleanup">
+        <CleanupPanel />
+      </el-tab-pane>
       <el-tab-pane label="数据库设置" name="settings">
     <section class="panel config-panel">
       <div class="section-title">
@@ -170,6 +173,7 @@
 import axios from 'axios'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import CleanupPanel from './CleanupPanel.vue'
 
 const settings = ref({ sourceJdbcUrl: '', sourceUsername: '', sourcePassword: '', targetBaseUrl: '', targetUsername: '', targetPassword: '' })
 const runs = ref([])
