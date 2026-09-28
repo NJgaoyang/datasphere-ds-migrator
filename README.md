@@ -15,11 +15,14 @@
 - 同一 Workflow 内依赖只迁为 DAG Edge；安全的根 `DEPENDENT` 节点迁为 disabled Native Scheduler 跨工作流依赖，不再生成“依赖 SQL”或第二份调度
 - 实时查看进度、对象、问题和事件
 - 支持取消任务、问题标记已处理、源→目标 ID 幂等映射
+- 提供“数据清理”页，可勾选数据开发、任务流或全部，一键清理由本迁移工具创建并记录在 `migration_object_map` 中的 DataSphere 任务；清理顺序固定为任务流 → 数据开发，并保留失败明细
 
 ## 安全策略
 
 源端仅通过 JDBC 读取；目标端只通过 DataSphere REST API 写入。正式迁移不会自动 Publish/Online，也不会启用 Native Scheduler Schedule。生产切换前必须先完成 Dry Run、问题清零和目标对象核对。
 迁移工具自身数据库密码通过 `MIGRATOR_DB_PASSWORD` 环境变量注入，不写入代码仓库；DataSphere 登录密码仅保存在迁移工具状态库中且页面不回显。
+
+“数据清理”是破坏性操作，因此只清理由本工具建立映射的迁移目标，不删除项目、数据源、用户、系统配置，也不会扫描并删除用户在 DataSphere 中手工创建但未被本工具记录的任务。只勾“数据开发”时，如果目标任务仍被未清除的任务流引用，DataSphere 会拒绝删除并在页面显示失败原因。
 
 ## 生产迁移目标模型
 
