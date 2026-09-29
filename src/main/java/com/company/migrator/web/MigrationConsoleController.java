@@ -2,10 +2,12 @@ package com.company.migrator.web;
 
 import com.company.migrator.common.MigrationModels.*;
 import com.company.migrator.common.SqlDependencyModels.*;
+import com.company.migrator.common.WorkflowControlModels.*;
 import com.company.migrator.service.CleanupService;
 import com.company.migrator.service.MigrationService;
 import com.company.migrator.service.SettingService;
 import com.company.migrator.service.SqlDependencyService;
+import com.company.migrator.service.WorkflowControlService;
 import com.company.migrator.source.DolphinScheduler319Reader;
 import com.company.migrator.target.DataSphereClient;
 import org.springframework.web.bind.annotation.*;
@@ -19,14 +21,15 @@ public class MigrationConsoleController {
     private final MigrationService migrations;
     private final CleanupService cleanup;
     private final SqlDependencyService sqlDependencies;
+    private final WorkflowControlService workflowControl;
     private final DolphinScheduler319Reader source;
     private final DataSphereClient target;
 
     public MigrationConsoleController(SettingService settings, MigrationService migrations, CleanupService cleanup,
-                                      SqlDependencyService sqlDependencies,
+                                      SqlDependencyService sqlDependencies, WorkflowControlService workflowControl,
                                       DolphinScheduler319Reader source, DataSphereClient target) {
         this.settings = settings; this.migrations = migrations; this.cleanup = cleanup; this.sqlDependencies = sqlDependencies;
-        this.source = source; this.target = target;
+        this.workflowControl = workflowControl; this.source = source; this.target = target;
     }
 
     @GetMapping("/health")
@@ -66,6 +69,18 @@ public class MigrationConsoleController {
     public SqlDependencyApplyResult applySqlDependencies(@RequestBody(required = false) SqlDependencyApplyRequest request) {
         return sqlDependencies.apply(request);
     }
+
+    @GetMapping("/workflow-control")
+    public WorkflowControlSnapshot workflowControl() { return workflowControl.snapshot(); }
+
+    @PostMapping("/workflow-control/online")
+    public WorkflowActionResult onlineWorkflows(@RequestBody WorkflowControlRequest request) { return workflowControl.online(request); }
+
+    @PostMapping("/workflow-control/offline")
+    public WorkflowActionResult offlineWorkflows(@RequestBody WorkflowControlRequest request) { return workflowControl.offline(request); }
+
+    @PostMapping("/workflow-control/run")
+    public WorkflowActionResult runWorkflows(@RequestBody WorkflowControlRequest request) { return workflowControl.run(request); }
 
     @GetMapping("/scope")
     public MigrationScopeView scope() { return migrations.migrationScope(); }
