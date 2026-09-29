@@ -81,6 +81,18 @@ public class DataSphereClient {
         return file(settings, fileId).path("lifecycleStatus").asText("");
     }
 
+    public JsonNode fileSchedule(Settings settings, long fileId) {
+        return data(get(settings, "/api/files/" + fileId + "/schedule"));
+    }
+
+    public JsonNode onlineFile(Settings settings, long fileId) {
+        return data(post(settings, "/api/files/" + fileId + "/online", Map.of()));
+    }
+
+    public JsonNode publishFile(Settings settings, long fileId) {
+        return data(post(settings, "/api/files/" + fileId + "/publish", Map.of()));
+    }
+
     public void offlineFile(Settings settings, long fileId) {
         data(post(settings, "/api/files/" + fileId + "/offline", Map.of()));
     }
@@ -99,6 +111,30 @@ public class DataSphereClient {
 
     public JsonNode workflow(Settings settings, long workflowId) {
         return data(get(settings, "/api/workflows/" + workflowId));
+    }
+
+    public JsonNode workflowSchedule(Settings settings, long workflowId) {
+        return data(get(settings, "/api/scheduler/workflows/" + workflowId + "/schedule"));
+    }
+
+    public JsonNode workflowPreflight(Settings settings, long workflowId) {
+        return data(get(settings, "/api/scheduler/workflows/" + workflowId + "/preflight"));
+    }
+
+    public JsonNode publishWorkflow(Settings settings, long workflowId) {
+        return data(post(settings, "/api/workflows/" + workflowId + "/publish", Map.of()));
+    }
+
+    public JsonNode onlineWorkflow(Settings settings, long workflowId) {
+        return data(post(settings, "/api/scheduler/workflows/" + workflowId + "/online", Map.of()));
+    }
+
+    public JsonNode offlineWorkflow(Settings settings, long workflowId) {
+        return data(post(settings, "/api/scheduler/workflows/" + workflowId + "/offline", Map.of()));
+    }
+
+    public JsonNode runWorkflow(Settings settings, long workflowId) {
+        return data(post(settings, "/api/workflows/" + workflowId + "/run", Map.of()));
     }
 
     public boolean fileExists(Settings settings, long fileId) {
