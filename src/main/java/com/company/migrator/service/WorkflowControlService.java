@@ -1,0 +1,224 @@
+package com.company.migrator.service;
+
+import com.company.migrator.common.MigrationModels.Settings;
+import com.company.migrator.common.WorkflowControlModels.*;
+import com.company.migrator.target.DataSphereClient;
+import com.fasterxml.jackson.databind.JsonNode;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+
+import java.util.*;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+@Service
+public class WorkflowControlService {
+    private final JdbcTemplate jdbc;
+    private final SettingService settings;
+    private final DataSphereClient target;
+
+    public WorkflowControlService(JdbcTemplate jdbc, SettingService settings, DataSphereClient target) {
+        this.jdbc = jdbc;
+        this.settings = settings;
+        this.target = target;
+    }
+
+    public WorkflowControlSnapshot snapshot() {
+        Settings s = settings.get();
+        List<WorkflowControlItem> items = new ArrayList<>();
+        for (MappedTarget row : mappedTargets("WORKFLOW")) {
+            try {
+                JsonNode workflow = target.workflow(s, row.id());
+                JsonNode schedule = target.workflowSchedule(s, row.id());
+                String status = workflow.path("status").asText("UNKNOWN");
+                boolean configured = schedule.path("id").asLong(0) > 0;
+                boolean enabled = configured && schedule.path("enabled").asBoolean(false);
+                Boolean ready = null;
+                String preflightMessage = "发布后执行生产切换检查";
+                if ("PUBLISHED".equalsIgnoreCase(status) && configured) {
+                    JsonNode preflight = target.workflowPreflight(s, row.id());
+                    ready = preflight.path("ready").asBoolean(false);
+                    preflightMessage = preflight.path("message").asText("");
+                } else if ("PUBLISHED".equalsIgnoreCase(status)) {
+                    ready = true;
+                    preflightMessage = "无 Native Scheduler 调度，仅保留手动运行";
+                }
+                items.add(new WorkflowControlItem(row.id(), workflow.path("workflowCode").asText(""),
+                        displayName(row, workflow), status, configured, enabled, ready, preflightMessage, ""));
+            } catch (Exception ex) {
+                items.add(new WorkflowControlItem(row.id(), "", row.name(), "MISSING", false, false,
+                        false, "", rootMessage(ex)));
+            }
+        }
+        int published = (int) items.stream().filter(i -> "PUBLISHED".equalsIgnoreCase(i.definitionStatus())).count();
+        int online = (int) items.stream().filter(WorkflowControlItem::scheduleEnabled).count();
+        int ready = (int) items.stream().filter(i -> Boolean.TRUE.equals(i.preflightReady())).count();
+        return new WorkflowControlSnapshot(items.size(), published, online, ready, List.copyOf(items));
+    }
+
+    public WorkflowActionResult online(WorkflowControlRequest request) {
+        Settings s = settings.get();
+        List<MappedTarget> selected = selectedTargets(request);
+        Set<Long> managedFiles = mappedTargets("DEV_FILE").stream().map(MappedTarget::id).collect(Collectors.toSet());
+        List<WorkflowActionItem> results = new ArrayList<>();
+        for (MappedTarget row : selected) {
+            try {
+                JsonNode workflow = target.workflow(s, row.id());
+                String name = displayName(row, workflow);
+                prepareDevelopmentFiles(s, workflow, managedFiles);
+                target.validateWorkflow(s, row.id());
+                if (!"PUBLISHED".equalsIgnoreCase(target.workflowStatus(s, row.id()))) {
+                    target.publishWorkflow(s, row.id());
+                }
+                JsonNode schedule = target.workflowSchedule(s, row.id());
+                if (schedule.path("id").asLong(0) == 0) {
+                    results.add(success(row.id(), name, "PUBLISHED", "工作流已发布；未配置 Native Scheduler 调度，可手动运行", null));
+                    continue;
+                }
+                if (schedule.path("enabled").asBoolean(false)) {
+                    results.add(success(row.id(), name, "ONLINE", "Native Scheduler 调度已在线，无需重复上线", null));
+                    continue;
+                }
+                JsonNode preflight = target.workflowPreflight(s, row.id());
+                if (!preflight.path("ready").asBoolean(false)) {
+                    results.add(failure(row.id(), name, "BLOCKED", preflight.path("message").asText("生产切换检查未通过")));
+                    continue;
+                }
+                target.onlineWorkflow(s, row.id());
+                results.add(success(row.id(), name, "ONLINE", "工作流已发布，Native Scheduler 调度已上线", null));
+            } catch (Exception ex) {
+                results.add(failure(row.id(), row.name(), "FAILED", rootMessage(ex)));
+            }
+        }
+        return result("ONLINE", selected.size(), results, "一键上线");
+    }
+
+    public WorkflowActionResult offline(WorkflowControlRequest request) {
+        Settings s = settings.get();
+        List<MappedTarget> selected = selectedTargets(request);
+        List<WorkflowActionItem> results = new ArrayList<>();
+        for (MappedTarget row : selected) {
+            try {
+                JsonNode workflow = target.workflow(s, row.id());
+                String name = displayName(row, workflow);
+                JsonNode schedule = target.workflowSchedule(s, row.id());
+                if (schedule.path("id").asLong(0) == 0 || !schedule.path("enabled").asBoolean(false)) {
+                    results.add(success(row.id(), name, "OFFLINE", "Native Scheduler 调度已离线或未配置；已发布定义保持不变", null));
+                    continue;
+                }
+                target.offlineWorkflow(s, row.id());
+                results.add(success(row.id(), name, "OFFLINE", "Native Scheduler 自动调度已下线；已发布定义仍可手动运行", null));
+            } catch (Exception ex) {
+                results.add(failure(row.id(), row.name(), "FAILED", rootMessage(ex)));
+            }
+        }
+        return result("OFFLINE", selected.size(), results, "一键下线");
+    }
+
+    public WorkflowActionResult run(WorkflowControlRequest request) {
+        Settings s = settings.get();
+        List<MappedTarget> selected = selectedTargets(request);
+        List<WorkflowActionItem> results = new ArrayList<>();
+        for (MappedTarget row : selected) {
+            try {
+                JsonNode workflow = target.workflow(s, row.id());
+                String name = displayName(row, workflow);
+                if (!"PUBLISHED".equalsIgnoreCase(workflow.path("status").asText(""))) {
+                    results.add(failure(row.id(), name, "BLOCKED", "工作流尚未发布，请先执行一键上线"));
+                    continue;
+                }
+                JsonNode run = target.runWorkflow(s, row.id());
+                String instanceId = run.path("instanceId").asText("");
+                String status = run.path("status").asText("SUBMITTED");
+                String message = run.path("message").asText("调度实例已提交");
+                results.add(success(row.id(), name, status, message, instanceId));
+            } catch (Exception ex) {
+                results.add(failure(row.id(), row.name(), "FAILED", rootMessage(ex)));
+            }
+        }
+        return result("RUN", selected.size(), results, "批量运行");
+    }
+
+    private void prepareDevelopmentFiles(Settings s, JsonNode workflow, Set<Long> managedFiles) {
+        LinkedHashSet<Long> fileIds = new LinkedHashSet<>();
+        for (JsonNode node : workflow.path("nodes")) {
+            JsonNode fileId = node.get("devFileId");
+            if (fileId != null && !fileId.isNull() && fileId.asLong(0) > 0) fileIds.add(fileId.asLong());
+        }
+        for (Long fileId : fileIds) {
+            JsonNode file = target.file(s, fileId);
+            if ("PUBLISHED".equalsIgnoreCase(file.path("status").asText(""))) continue;
+            if (!managedFiles.contains(fileId)) {
+                throw new IllegalStateException("工作流引用了非迁移工具管理且尚未发布的开发任务：" +
+                        file.path("name").asText("#" + fileId) + "(#" + fileId + ")，请在 DataSphere 手工上线并发布");
+            }
+            JsonNode legacySchedule = target.fileSchedule(s, fileId);
+            if (legacySchedule.path("enabled").asBoolean(false)) {
+                throw new IllegalStateException("开发任务仍启用旧 dev_file_schedule，拒绝自动上线避免双跑：" +
+                        file.path("name").asText("#" + fileId) + "(#" + fileId + ")");
+            }
+            if (!"ONLINE".equalsIgnoreCase(file.path("lifecycleStatus").asText(""))) {
+                target.onlineFile(s, fileId);
+            }
+            target.publishFile(s, fileId);
+        }
+    }
+
+    private List<MappedTarget> selectedTargets(WorkflowControlRequest request) {
+        List<MappedTarget> all = mappedTargets("WORKFLOW");
+        List<Long> requested = request == null ? List.of() : request.workflowIdsValue();
+        if (requested.isEmpty()) throw new IllegalArgumentException("请至少选择一个已迁移工作流");
+        Map<Long, MappedTarget> mapped = all.stream().collect(Collectors.toMap(MappedTarget::id, Function.identity(), (a, b) -> a, LinkedHashMap::new));
+        LinkedHashSet<Long> unique = new LinkedHashSet<>(requested);
+        List<MappedTarget> selected = new ArrayList<>();
+        for (Long id : unique) {
+            MappedTarget row = mapped.get(id);
+            if (row == null) throw new IllegalArgumentException("Workflow #" + id + " 不属于当前迁移工具映射，拒绝操作");
+            selected.add(row);
+        }
+        return selected;
+    }
+
+    private List<MappedTarget> mappedTargets(String targetType) {
+        Map<Long, String> targets = new LinkedHashMap<>();
+        jdbc.query("SELECT target_id,MAX(target_name) target_name FROM migration_object_map WHERE target_type=? GROUP BY target_id ORDER BY target_id",
+                rs -> {
+                    long id = Long.parseLong(rs.getString("target_id"));
+                    targets.put(id, rs.getString("target_name"));
+                }, targetType);
+        return targets.entrySet().stream()
+                .map(entry -> new MappedTarget(entry.getKey(), entry.getValue() == null || entry.getValue().isBlank()
+                        ? targetType + " #" + entry.getKey() : entry.getValue()))
+                .toList();
+    }
+
+    private String displayName(MappedTarget row, JsonNode workflow) {
+        String name = workflow.path("name").asText("").trim();
+        return name.isBlank() ? row.name() : name;
+    }
+
+    private WorkflowActionResult result(String action, int requested, List<WorkflowActionItem> items, String label) {
+        int success = (int) items.stream().filter(WorkflowActionItem::success).count();
+        int failure = items.size() - success;
+        String message = failure == 0
+                ? label + "完成：成功 " + success + " 个"
+                : label + "完成：成功 " + success + " 个，失败/阻塞 " + failure + " 个，请查看明细";
+        return new WorkflowActionResult(action, requested, success, failure, List.copyOf(items), message);
+    }
+
+    private WorkflowActionItem success(long id, String name, String status, String message, String instanceId) {
+        return new WorkflowActionItem(id, name, true, status, message, instanceId);
+    }
+
+    private WorkflowActionItem failure(long id, String name, String status, String message) {
+        return new WorkflowActionItem(id, name, false, status, message, null);
+    }
+
+    private String rootMessage(Throwable ex) {
+        Throwable cursor = ex;
+        while (cursor.getCause() != null) cursor = cursor.getCause();
+        return cursor.getMessage() == null ? cursor.getClass().getSimpleName() : cursor.getMessage();
+    }
+
+    private record MappedTarget(long id, String name) { }
+}
