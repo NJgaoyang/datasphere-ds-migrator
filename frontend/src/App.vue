@@ -127,6 +127,9 @@
       <el-tab-pane label="SQL 依赖分析" name="sqlDependencies">
         <SqlDependencyPanel />
       </el-tab-pane>
+      <el-tab-pane label="运行控制" name="workflowControl">
+        <WorkflowControlPanel />
+      </el-tab-pane>
       <el-tab-pane label="数据清理" name="cleanup">
         <CleanupPanel />
       </el-tab-pane>
@@ -178,6 +181,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import CleanupPanel from './CleanupPanel.vue'
 import SqlDependencyPanel from './SqlDependencyPanel.vue'
+import WorkflowControlPanel from './WorkflowControlPanel.vue'
 
 const settings = ref({ sourceJdbcUrl: '', sourceUsername: '', sourcePassword: '', targetBaseUrl: '', targetUsername: '', targetPassword: '' })
 const runs = ref([])
