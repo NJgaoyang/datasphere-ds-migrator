@@ -48,7 +48,7 @@ public class CleanupService {
                     continue;
                 }
                 String lifecycle = target.fileLifecycleStatus(s, row.id());
-                if (!"ONLINE".equalsIgnoreCase(lifecycle)) {
+                if (!"PUBLISHED".equalsIgnoreCase(lifecycle) && !"ONLINE".equalsIgnoreCase(lifecycle)) {
                     skipped++;
                     continue;
                 }
@@ -61,7 +61,7 @@ public class CleanupService {
 
         int failureCount = failures.size();
         String message = failureCount == 0
-                ? "下线完成；已下线数据开发任务 " + offlined + " 个，已离线或不存在 " + skipped + " 个"
+                ? "下线完成；已下线数据开发任务 " + offlined + " 个，未上线或不存在 " + skipped + " 个"
                 : "下线完成但有 " + failureCount + " 个任务下线失败，请查看失败明细";
         return new OfflineResult(failureCount == 0, offlined, skipped,
                 failureCount, List.copyOf(failures), message);
@@ -73,12 +73,21 @@ public class CleanupService {
         List<CleanupFailure> failures = new ArrayList<>();
         int deletedWorkflows = 0;
         int deletedDevelopment = 0;
+        int deletedRecycledDevelopment = 0;
 
-        // Workflows must be removed first so their dev-file references do not block task cleanup.
+        // DataForge workflow references and cross-workflow dependencies must be removed before dev files.
         if (request.workflowsValue()) {
             for (MappedTarget row : mappedTargets("WORKFLOW")) {
                 try {
-                    if (target.workflowExists(s, row.id())) target.deleteWorkflow(s, row.id());
+                    if (target.workflowExists(s, row.id())) {
+                        String workflowCode = target.workflowCode(s, row.id());
+                        target.deleteWorkflowDependencies(s, workflowCode);
+                        String status = target.workflowStatus(s, row.id());
+                        if ("PUBLISHED".equalsIgnoreCase(status) || "ONLINE".equalsIgnoreCase(status)) {
+                            target.offlineWorkflow(s, row.id());
+                        }
+                        target.deleteWorkflow(s, row.id());
+                    }
                     deleteMapping("WORKFLOW", row.id());
                     deletedWorkflows++;
                 } catch (Exception ex) {
@@ -90,15 +99,24 @@ public class CleanupService {
         if (request.developmentValue()) {
             for (MappedTarget row : mappedTargets("DEV_FILE")) {
                 try {
-                    if (target.fileExists(s, row.id())) {
+                    boolean active = target.fileExists(s, row.id());
+                    boolean recycledAtStart = !active && target.recycledFileExists(s, row.id());
+                    if (active) {
                         String lifecycle = target.fileLifecycleStatus(s, row.id());
-                        if ("ONLINE".equalsIgnoreCase(lifecycle)) {
+                        if ("PUBLISHED".equalsIgnoreCase(lifecycle) || "ONLINE".equalsIgnoreCase(lifecycle)) {
                             target.offlineFile(s, row.id());
                         }
                         target.deleteFile(s, row.id());
+                        target.permanentlyDeleteFile(s, row.id());
+                        deletedDevelopment++;
+                    } else if (recycledAtStart) {
+                        target.permanentlyDeleteFile(s, row.id());
+                        deletedRecycledDevelopment++;
+                    } else {
+                        // The target object was already removed outside the migrator; remove only the stale mapping.
+                        deletedDevelopment++;
                     }
                     deleteMapping("DEV_FILE", row.id());
-                    deletedDevelopment++;
                 } catch (Exception ex) {
                     failures.add(new CleanupFailure("数据开发", row.name(), rootMessage(ex)));
                 }
@@ -107,9 +125,10 @@ public class CleanupService {
 
         int failureCount = failures.size();
         String message = failureCount == 0
-                ? "清除完成；已删除任务流 " + deletedWorkflows + " 个，数据开发任务 " + deletedDevelopment + " 个"
+                ? "清除完成；已删除任务流 " + deletedWorkflows + " 个，数据开发任务 " + deletedDevelopment
+                    + " 个，回收箱历史任务 " + deletedRecycledDevelopment + " 个"
                 : "清除完成但有 " + failureCount + " 个对象未删除，请查看失败明细";
-        return new CleanupResult(failureCount == 0, deletedDevelopment, 0, deletedWorkflows,
+        return new CleanupResult(failureCount == 0, deletedDevelopment, deletedRecycledDevelopment, deletedWorkflows,
                 failureCount, List.copyOf(failures), message);
     }
 
