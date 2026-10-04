@@ -44,9 +44,10 @@ public class WorkflowControlService {
                     preflightMessage = "无 Native Scheduler 调度，仅保留手动运行";
                 }
                 items.add(new WorkflowControlItem(row.id(), workflow.path("workflowCode").asText(""),
-                        displayName(row, workflow), status, configured, enabled, ready, preflightMessage, ""));
+                        displayName(row, workflow), status, configured, enabled, schedule.path("cronExpression").asText(""),
+                        ready, preflightMessage, ""));
             } catch (Exception ex) {
-                items.add(new WorkflowControlItem(row.id(), "", row.name(), "MISSING", false, false,
+                items.add(new WorkflowControlItem(row.id(), "", row.name(), "MISSING", false, false, "",
                         false, "", rootMessage(ex)));
             }
         }
@@ -67,25 +68,36 @@ public class WorkflowControlService {
                 String name = displayName(row, workflow);
                 prepareDevelopmentFiles(s, workflow, managedFiles);
                 target.validateWorkflow(s, row.id());
+
+                JsonNode schedule = target.workflowSchedule(s, row.id());
+                boolean configured = schedule.path("id").asLong(0) > 0;
+                if (configured && !schedule.path("desiredEnabled").asBoolean(false)) {
+                    // Draft/Offline 时这里只写 desiredEnabled=true；发布快照完成后 DataForge 会真正激活。
+                    target.onlineWorkflow(s, row.id());
+                }
+
                 if (!"PUBLISHED".equalsIgnoreCase(target.workflowStatus(s, row.id()))) {
                     target.publishWorkflow(s, row.id());
                 }
-                JsonNode schedule = target.workflowSchedule(s, row.id());
-                if (schedule.path("id").asLong(0) == 0) {
-                    results.add(success(row.id(), name, "PUBLISHED", "工作流已发布；未配置 Native Scheduler 调度，可手动运行", null));
+                if (!configured) {
+                    results.add(success(row.id(), name, "PUBLISHED", "工作流已发布；源端无调度配置，保留手动运行", null));
                     continue;
                 }
-                if (schedule.path("enabled").asBoolean(false)) {
-                    results.add(success(row.id(), name, "ONLINE", "Native Scheduler 调度已在线，无需重复上线", null));
-                    continue;
-                }
+
                 JsonNode preflight = target.workflowPreflight(s, row.id());
                 if (!preflight.path("ready").asBoolean(false)) {
                     results.add(failure(row.id(), name, "BLOCKED", preflight.path("message").asText("生产切换检查未通过")));
                     continue;
                 }
-                target.onlineWorkflow(s, row.id());
-                results.add(success(row.id(), name, "ONLINE", "工作流已发布，Native Scheduler 调度已上线", null));
+                JsonNode active = target.workflowSchedule(s, row.id());
+                if (!active.path("enabled").asBoolean(false)) {
+                    active = target.onlineWorkflow(s, row.id());
+                }
+                if (!active.path("enabled").asBoolean(false)) {
+                    results.add(failure(row.id(), name, "BLOCKED", "Workflow 已发布，但 Native Scheduler 未能激活"));
+                    continue;
+                }
+                results.add(success(row.id(), name, "ONLINE", "工作流已发布，源端 Cron 已启用 Native Scheduler", null));
             } catch (Exception ex) {
                 results.add(failure(row.id(), row.name(), "FAILED", rootMessage(ex)));
             }
@@ -117,26 +129,81 @@ public class WorkflowControlService {
 
     public WorkflowActionResult run(WorkflowControlRequest request) {
         Settings s = settings.get();
-        List<MappedTarget> selected = selectedTargets(request);
+        List<MappedTarget> selected = new ArrayList<>(selectedTargets(request));
+        selected.sort(Comparator.comparingInt((MappedTarget row) -> layerRank(row.name())).thenComparing(MappedTarget::name));
         List<WorkflowActionItem> results = new ArrayList<>();
+        String blocker = null;
         for (MappedTarget row : selected) {
+            String layer = layerName(row.name());
+            if (blocker != null) {
+                results.add(failure(row.id(), row.name(), "BLOCKED", "前置层执行失败，未进入 " + layer + "：" + blocker));
+                continue;
+            }
             try {
                 JsonNode workflow = target.workflow(s, row.id());
                 String name = displayName(row, workflow);
                 if (!"PUBLISHED".equalsIgnoreCase(workflow.path("status").asText(""))) {
-                    results.add(failure(row.id(), name, "BLOCKED", "工作流尚未发布，请先执行一键上线"));
+                    String message = "工作流尚未发布，请先执行一键上线";
+                    results.add(failure(row.id(), name, "BLOCKED", message));
+                    blocker = name + "：" + message;
                     continue;
                 }
                 JsonNode run = target.runWorkflow(s, row.id());
                 String instanceId = run.path("instanceId").asText("");
-                String status = run.path("status").asText("SUBMITTED");
-                String message = run.path("message").asText("调度实例已提交");
-                results.add(success(row.id(), name, status, message, instanceId));
+                if (instanceId.isBlank()) throw new IllegalStateException("DataForge 未返回工作流实例编号");
+                JsonNode completed = waitForCompletion(s, instanceId);
+                String status = completed.path("status").asText("UNKNOWN").toUpperCase(Locale.ROOT);
+                if (!"SUCCESS".equals(status)) {
+                    String log = completed.path("log").asText("");
+                    String message = layer + " 层运行失败：" + status + (log.isBlank() ? "" : " · " + abbreviate(log, 240));
+                    results.add(failure(row.id(), name, status, message));
+                    blocker = name + "：" + status;
+                    continue;
+                }
+                results.add(success(row.id(), name, "SUCCESS", layer + " 层执行成功；下一层可继续", instanceId));
             } catch (Exception ex) {
-                results.add(failure(row.id(), row.name(), "FAILED", rootMessage(ex)));
+                String message = rootMessage(ex);
+                results.add(failure(row.id(), row.name(), "FAILED", message));
+                blocker = row.name() + "：" + message;
             }
         }
-        return result("RUN", selected.size(), results, "批量运行");
+        return result("RUN", selected.size(), results, "DIM → DWD → DWS → ADS 分层运行");
+    }
+
+    private JsonNode waitForCompletion(Settings s, String instanceId) throws InterruptedException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.HOURS.toNanos(2);
+        Set<String> terminal = Set.of("SUCCESS", "FAILED", "STOPPED", "KILLED", "CANCELLED", "PARTIAL_FAILED");
+        while (System.nanoTime() < deadline) {
+            JsonNode status = target.workflowInstanceStatus(s, instanceId);
+            String value = status.path("status").asText("").toUpperCase(Locale.ROOT);
+            if (terminal.contains(value)) return status;
+            Thread.sleep(2_000L);
+        }
+        throw new IllegalStateException("工作流实例等待超时（2 小时）：" + instanceId);
+    }
+
+    private int layerRank(String name) {
+        return switch (layerName(name)) {
+            case "DIM" -> 0;
+            case "DWD" -> 1;
+            case "DWS" -> 2;
+            case "ADS" -> 3;
+            default -> 4;
+        };
+    }
+
+    private String layerName(String name) {
+        String value = name == null ? "" : name.trim().toUpperCase(Locale.ROOT);
+        if (value.equals("DIM") || value.startsWith("DIM_")) return "DIM";
+        if (value.equals("DWD") || value.startsWith("DWD_")) return "DWD";
+        if (value.equals("DWS") || value.startsWith("DWS_")) return "DWS";
+        if (value.equals("ADS") || value.startsWith("ADS_")) return "ADS";
+        return "OTHER";
+    }
+
+    private String abbreviate(String value, int max) {
+        if (value == null || value.length() <= max) return value == null ? "" : value;
+        return value.substring(0, max) + "…";
     }
 
     private void prepareDevelopmentFiles(Settings s, JsonNode workflow, Set<Long> managedFiles) {
@@ -157,10 +224,7 @@ public class WorkflowControlService {
                 throw new IllegalStateException("开发任务仍启用旧 dev_file_schedule，拒绝自动上线避免双跑：" +
                         file.path("name").asText("#" + fileId) + "(#" + fileId + ")");
             }
-            if (!"ONLINE".equalsIgnoreCase(file.path("lifecycleStatus").asText(""))) {
-                target.onlineFile(s, fileId);
-            }
-            target.publishFile(s, fileId);
+            target.onlineFile(s, fileId);
         }
     }
 

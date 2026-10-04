@@ -159,19 +159,51 @@ public class DataSphereClient {
     }
 
     public JsonNode publishWorkflow(Settings settings, long workflowId) {
-        return data(post(settings, "/api/workflows/" + workflowId + "/publish", Map.of()));
+        JsonNode workflow = workflow(settings, workflowId);
+        if ("PUBLISHED".equalsIgnoreCase(workflow.path("status").asText(""))) return workflow;
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("resourceType", "WORKFLOW");
+        payload.put("resourceId", workflowId);
+        payload.put("resourceName", workflow.path("name").asText("Workflow #" + workflowId));
+        payload.put("requestedVersion", workflow.path("publishedVersion").asInt(0) + 1);
+        payload.put("payload", Map.of("source", "dolphinscheduler-migrator", "action", "one-click-online"));
+        JsonNode release = data(post(settings, "/api/release/requests", payload));
+        String releaseStatus = release.path("status").asText("");
+        if ("PENDING_APPROVAL".equalsIgnoreCase(releaseStatus)) {
+            throw new IllegalStateException("DataForge 发布策略要求审批，已创建发布申请 #" + release.path("id").asLong() + "，审批后再执行一键上线");
+        }
+        JsonNode published = workflow(settings, workflowId);
+        if (!"PUBLISHED".equalsIgnoreCase(published.path("status").asText(""))) {
+            throw new IllegalStateException("Workflow 发布未完成，发布申请状态：" + releaseStatus);
+        }
+        return published;
     }
 
     public JsonNode onlineWorkflow(Settings settings, long workflowId) {
-        return data(post(settings, "/api/scheduler/workflows/" + workflowId + "/online", Map.of()));
+        return saveWorkflowScheduleEnabled(settings, workflowId, true);
     }
 
     public JsonNode offlineWorkflow(Settings settings, long workflowId) {
-        return data(post(settings, "/api/workflows/" + workflowId + "/offline", Map.of()));
+        return saveWorkflowScheduleEnabled(settings, workflowId, false);
     }
 
     public JsonNode runWorkflow(Settings settings, long workflowId) {
         return data(post(settings, "/api/workflows/" + workflowId + "/run", Map.of()));
+    }
+
+    public JsonNode workflowInstanceStatus(Settings settings, String instanceId) {
+        return data(get(settings, "/api/scheduler/instances/" + instanceId));
+    }
+
+    private JsonNode saveWorkflowScheduleEnabled(Settings settings, long workflowId, boolean enabled) {
+        JsonNode current = workflowSchedule(settings, workflowId);
+        if (current.path("id").asLong(0) == 0) return current;
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("cronExpression", current.path("cronExpression").asText(""));
+        payload.put("enabled", enabled);
+        payload.put("retryCount", current.path("retryCount").asInt(0));
+        payload.put("retryIntervalMinutes", current.path("retryIntervalMinutes").asInt(1));
+        return data(put(settings, "/api/scheduler/workflows/" + workflowId + "/schedule", payload));
     }
 
     public boolean fileExists(Settings settings, long fileId) {

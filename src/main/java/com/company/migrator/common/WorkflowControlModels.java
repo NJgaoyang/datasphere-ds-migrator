@@ -16,6 +16,7 @@ public final class WorkflowControlModels {
             String definitionStatus,
             boolean scheduleConfigured,
             boolean scheduleEnabled,
+            String cronExpression,
             Boolean preflightReady,
             String preflightMessage,
             String message) { }

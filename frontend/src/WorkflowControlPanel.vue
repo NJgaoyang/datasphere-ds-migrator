@@ -3,7 +3,7 @@
     <div class="control-heading">
       <div>
         <h2>运行控制</h2>
-        <p>只操作本迁移工具映射的 Workflow。上线按“开发任务生产版本 → Workflow 发布 → 生产切换检查 → Native Scheduler 上线”执行。</p>
+        <p>只操作本迁移工具映射的 Workflow。一键上线会发布固定版本快照并启用已迁移的源端 Cron；跑任务严格按 DIM → DWD → DWS → ADS 顺序执行。</p>
       </div>
       <el-button :loading="loading" @click="load">刷新状态</el-button>
     </div>
@@ -16,14 +16,14 @@
     </div>
 
     <el-alert type="info" :closable="false" show-icon
-      title="一键下线只关闭 Native Scheduler 自动调度，不取消 Workflow 发布；下线后仍可手工运行。无调度配置的 Workflow 上线时只发布，不会自动创建默认 Cron。" />
+      title="迁移阶段会保留源端 Cron 但默认暂停，避免迁移即双跑。一键上线才会正式发布 Workflow 并开启该 Cron；无源端调度的 Workflow 只发布，不自动创建默认 Cron。" />
 
     <div class="action-bar">
       <span>已选择 <strong>{{ selectedIds.length }}</strong> / {{ snapshot.totalCount || 0 }} 个 Workflow</span>
       <span class="spacer" />
       <el-button type="success" :loading="actionLoading === 'online'" :disabled="!selectedIds.length || !!actionLoading" @click="onlineSelected">一键上线</el-button>
       <el-button type="warning" plain :loading="actionLoading === 'offline'" :disabled="!selectedIds.length || !!actionLoading" @click="offlineSelected">一键下线</el-button>
-      <el-button type="primary" :loading="actionLoading === 'run'" :disabled="!selectedIds.length || !!actionLoading" @click="runSelected">跑任务</el-button>
+      <el-button type="primary" :loading="actionLoading === 'run'" :disabled="!selectedIds.length || !!actionLoading" @click="runSelected">跑任务（DIM → DWD → DWS → ADS）</el-button>
     </div>
 
     <el-table ref="tableRef" :data="snapshot.workflows || []" height="480" row-key="workflowId" @selection-change="selectionChanged">
@@ -33,10 +33,13 @@
       <el-table-column label="定义状态" width="110">
         <template #default="s"><el-tag size="small" :type="s.row.definitionStatus === 'PUBLISHED' ? 'success' : s.row.definitionStatus === 'MISSING' ? 'danger' : 'info'">{{ definitionLabel(s.row.definitionStatus) }}</el-tag></template>
       </el-table-column>
-      <el-table-column label="调度" width="110">
+      <el-table-column label="调度" min-width="190">
         <template #default="s">
           <el-tag v-if="!s.row.scheduleConfigured" size="small" type="info">无调度</el-tag>
-          <el-tag v-else size="small" :type="s.row.scheduleEnabled ? 'success' : 'warning'">{{ s.row.scheduleEnabled ? '在线' : '离线' }}</el-tag>
+          <template v-else>
+            <el-tag size="small" :type="s.row.scheduleEnabled ? 'success' : 'warning'">{{ s.row.scheduleEnabled ? '在线' : '待上线' }}</el-tag>
+            <code class="cron">{{ s.row.cronExpression || '-' }}</code>
+          </template>
         </template>
       </el-table-column>
       <el-table-column label="切换检查" min-width="230" show-overflow-tooltip>
@@ -100,7 +103,7 @@ function selectionChanged(rows) { selectedIds.value = rows.map(row => row.workfl
 
 async function onlineSelected() {
   await ElMessageBox.confirm(
-    `将上线所选 ${selectedIds.value.length} 个 Workflow：必要时先上线并发布迁移工具管理的开发任务，再发布 Workflow；有 Native Scheduler 调度的任务会通过生产切换检查后启用。不会绕过旧 Quartz 双跑保护。是否继续？`,
+    `将上线所选 ${selectedIds.value.length} 个 Workflow：准备开发任务生产版本 → 将已迁移 Cron 标记为待启用 → 通过 DataForge Release 发布 Workflow 固定快照 → 生产检查通过后正式开启 Native Scheduler。是否继续？`,
     '确认一键上线', { type: 'warning', confirmButtonText: '确认上线', cancelButtonText: '取消' })
   await execute('online', selectedIds.value)
 }
@@ -114,7 +117,7 @@ async function offlineSelected() {
 
 async function runSelected() {
   await ElMessageBox.confirm(
-    `将立即提交所选 ${selectedIds.value.length} 个 Workflow 的手工运行实例。手工运行不要求调度在线，但 Workflow 必须已发布。是否继续？`,
+    `将运行所选 ${selectedIds.value.length} 个 Workflow，并严格按 DIM → DWD → DWS → ADS 顺序执行；每个 Workflow 成功后才继续下一个，前置失败将阻断后续。Workflow 必须已发布。是否继续？`,
     '确认跑任务', { type: 'warning', confirmButtonText: '立即运行', cancelButtonText: '取消' })
   await execute('run', selectedIds.value)
 }
@@ -146,7 +149,7 @@ onMounted(() => load(true))
 .metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
 .metric-grid>div{padding:14px 16px;border:1px solid #e5e7eb;border-radius:8px;background:#fff}.metric-grid span{display:block;color:#6b7280;font-size:13px}.metric-grid strong{display:block;margin-top:6px;font-size:24px}
 .action-bar{display:flex;align-items:center;gap:10px;margin:16px 0;padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fafafa}.spacer{flex:1}
-.ok{color:#15803d;font-weight:600}.bad{color:#b91c1c;font-weight:600}.muted{color:#6b7280}.detail{margin-left:8px;color:#6b7280}
+.ok{color:#15803d;font-weight:600}.bad{color:#b91c1c;font-weight:600}.muted{color:#6b7280}.detail{margin-left:8px;color:#6b7280}.cron{display:block;margin-top:5px;color:#475569;font-size:12px;white-space:nowrap}
 .result-block{margin-top:18px;padding-top:16px;border-top:1px solid #e5e7eb}.result-title{display:flex;gap:12px;align-items:center;margin-bottom:10px}.result-title span{color:#6b7280}
 @media(max-width:900px){.metric-grid{grid-template-columns:repeat(2,1fr)}.control-heading,.action-bar{align-items:flex-start;flex-direction:column}.spacer{display:none}}
 </style>
