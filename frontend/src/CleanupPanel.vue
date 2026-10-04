@@ -2,8 +2,8 @@
   <section class="panel cleanup-panel">
     <div class="cleanup-heading">
       <div>
-        <h2>清理 DataSphere 迁移任务</h2>
-        <p>仅清理由本迁移工具创建并记录在 migration_object_map 中的任务，不删除项目、数据源、用户或系统配置。</p>
+        <h2>清理 DataForge 迁移任务</h2>
+        <p>只清理由本迁移工具创建并记录在 migration_object_map 中的工作流与开发任务，不删除项目、数据源、用户或系统配置。</p>
       </div>
       <el-tag type="danger" effect="plain">危险操作</el-tag>
     </div>
@@ -21,7 +21,7 @@
     </div>
 
     <el-alert
-      title="一键清除会自动先下线 ONLINE 的数据开发任务；删除顺序固定为：先任务流，再数据开发。只勾数据开发时，如果任务仍被未清除的任务流引用，DataSphere 会拒绝删除并返回失败明细。"
+      title="一键清除全部会先删除跨工作流依赖，已发布工作流会自动下线后删除；开发任务会在解除工作流引用后下线、移入回收箱并彻底删除。顺序固定为：工作流 → 数据开发。"
       type="warning" :closable="false" show-icon />
 
     <div class="cleanup-actions">
@@ -29,8 +29,11 @@
       <el-button type="warning" :loading="offlineLoading" :disabled="!selected.development || !preview.developmentTaskCount" @click="runOfflineDevelopment">
         一键下线数据开发
       </el-button>
-      <el-button type="danger" :loading="cleanupLoading" :disabled="!hasSelection || !preview.totalSelectedObjects" @click="runCleanup">
-        一键清除
+      <el-button :loading="cleanupLoading" :disabled="!hasSelection || !preview.totalSelectedObjects" @click="runCleanup">
+        按勾选范围清除
+      </el-button>
+      <el-button type="danger" :loading="cleanupAllLoading" @click="runCleanupAll">
+        一键清除全部迁移数据
       </el-button>
     </div>
 
@@ -48,10 +51,11 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const selected = reactive({ development: true, workflows: true })
-const preview = reactive({ developmentTaskCount: 0, workflowCount: 0, totalSelectedObjects: 0 })
+const preview = reactive({ developmentTaskCount: 0, recycledDevelopmentTaskCount: 0, workflowCount: 0, totalSelectedObjects: 0 })
 const previewLoading = ref(false)
 const offlineLoading = ref(false)
 const cleanupLoading = ref(false)
+const cleanupAllLoading = ref(false)
 const failures = ref([])
 const allSelected = ref(true)
 
@@ -74,7 +78,7 @@ function toggleAll(value) {
 
 async function refreshPreview() {
   if (!hasSelection.value) {
-    Object.assign(preview, { developmentTaskCount: 0, workflowCount: 0, totalSelectedObjects: 0 })
+    Object.assign(preview, { developmentTaskCount: 0, recycledDevelopmentTaskCount: 0, workflowCount: 0, totalSelectedObjects: 0 })
     return
   }
   previewLoading.value = true
@@ -89,11 +93,13 @@ async function refreshPreview() {
 }
 
 async function runOfflineDevelopment() {
-  await ElMessageBox.confirm(
-    `将检查本迁移工具记录的 ${preview.developmentTaskCount || 0} 个数据开发任务，并把其中 ONLINE 的任务批量下线。是否继续？`,
-    '确认一键下线',
-    { type: 'warning', confirmButtonText: '确认下线', cancelButtonText: '取消' }
-  )
+  try {
+    await ElMessageBox.confirm(
+      `将检查本迁移工具记录的 ${preview.developmentTaskCount || 0} 个数据开发任务，并把已经发布上线的任务批量下线。是否继续？`,
+      '确认一键下线',
+      { type: 'warning', confirmButtonText: '确认下线', cancelButtonText: '取消' }
+    )
+  } catch (_) { return }
   offlineLoading.value = true
   failures.value = []
   try {
@@ -109,11 +115,13 @@ async function runOfflineDevelopment() {
 
 async function runCleanup() {
   const labels = [selected.development ? '数据开发' : '', selected.workflows ? '任务流' : ''].filter(Boolean).join('、')
-  await ElMessageBox.confirm(
-    `将清除本迁移工具创建的 ${labels}，当前统计 ${preview.totalSelectedObjects || 0} 个对象。ONLINE 的数据开发任务会自动先下线。此操作不可通过迁移工具恢复，是否继续？`,
-    '确认清除 DataSphere 任务',
-    { type: 'error', confirmButtonText: '确认清除', cancelButtonText: '取消' }
-  )
+  try {
+    await ElMessageBox.confirm(
+      `将清除本迁移工具创建的 ${labels}，当前统计 ${preview.totalSelectedObjects || 0} 个对象。此操作不可通过迁移工具恢复，是否继续？`,
+      '确认清除 DataForge 迁移数据',
+      { type: 'error', confirmButtonText: '确认清除', cancelButtonText: '取消' }
+    )
+  } catch (_) { return }
   cleanupLoading.value = true
   failures.value = []
   try {
@@ -125,6 +133,42 @@ async function runCleanup() {
     ElMessage.error(e?.response?.data?.message || e?.message || String(e))
   } finally {
     cleanupLoading.value = false
+  }
+}
+
+async function runCleanupAll() {
+  let allPreview
+  try {
+    const { data } = await axios.post('/api/cleanup/preview', { development: true, workflows: true })
+    allPreview = data
+    if (!(data.totalSelectedObjects > 0)) {
+      ElMessage.info('当前没有本迁移工具记录的 DataForge 迁移对象')
+      return
+    }
+    await ElMessageBox.confirm(
+      `将彻底清除本工具记录的全部 DataForge 迁移数据：工作流 ${data.workflowCount || 0} 个、数据开发任务 ${data.developmentTaskCount || 0} 个。会自动处理工作流依赖、下线和回收箱彻底删除。是否继续？`,
+      '确认一键清除全部迁移数据',
+      { type: 'error', confirmButtonText: '彻底清除', cancelButtonText: '取消' }
+    )
+  } catch (e) {
+    if (e === 'cancel' || e === 'close') return
+    ElMessage.error(e?.response?.data?.message || e?.message || String(e))
+    return
+  }
+  cleanupAllLoading.value = true
+  failures.value = []
+  try {
+    const { data } = await axios.post('/api/cleanup/all')
+    failures.value = data.failures || []
+    data.success ? ElMessage.success(data.message) : ElMessage.warning(data.message)
+    selected.development = true
+    selected.workflows = true
+    allSelected.value = true
+    await refreshPreview()
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || e?.message || String(e))
+  } finally {
+    cleanupAllLoading.value = false
   }
 }
 
