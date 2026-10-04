@@ -219,11 +219,8 @@ public class WorkflowControlService {
                 throw new IllegalStateException("工作流引用了非迁移工具管理且尚未发布的开发任务：" +
                         file.path("name").asText("#" + fileId) + "(#" + fileId + ")，请在 DataSphere 手工上线并发布");
             }
-            JsonNode legacySchedule = target.fileSchedule(s, fileId);
-            if (legacySchedule.path("enabled").asBoolean(false)) {
-                throw new IllegalStateException("开发任务仍启用旧 dev_file_schedule，拒绝自动上线避免双跑：" +
-                        file.path("name").asText("#" + fileId) + "(#" + fileId + ")");
-            }
+            // Current DataForge has no dev_file_schedule: development files only publish fixed versions.
+            // Production Cron lives exclusively on Workflow Native Scheduler.
             target.onlineFile(s, fileId);
         }
     }

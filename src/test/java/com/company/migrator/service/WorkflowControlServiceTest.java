@@ -28,7 +28,6 @@ class WorkflowControlServiceTest {
         Settings s = targetSettings();
         when(target.workflow(s, 11L)).thenReturn(workflow(11, "wf_a", "DRAFT", 21L));
         when(target.file(s, 21L)).thenReturn(file(21, "sql_a", "DRAFT", "OFFLINE"));
-        when(target.fileSchedule(s, 21L)).thenReturn(schedule(0, false));
         when(target.workflowStatus(s, 11L)).thenReturn("DRAFT");
         when(target.workflowSchedule(s, 11L)).thenReturn(schedule(31, false, false), schedule(31, true, true));
         when(target.workflowPreflight(s, 11L)).thenReturn(preflight(true, "通过"));
@@ -44,30 +43,6 @@ class WorkflowControlServiceTest {
         verify(target).onlineWorkflow(s, 11L);
         verify(target).publishWorkflow(s, 11L);
         verify(target).workflowPreflight(s, 11L);
-    }
-
-    @Test
-    void blocksOnlineBeforeLifecycleChangeWhenLegacyDevelopmentScheduleEnabled() {
-        JdbcTemplate jdbc = jdbc("control_legacy_block");
-        map(jdbc, "WORKFLOW", "100", "WORKFLOW", "11", "wf_a");
-        map(jdbc, "TASK", "200", "DEV_FILE", "21", "sql_a");
-        SettingService settings = settings();
-        DataSphereClient target = mock(DataSphereClient.class);
-        Settings s = targetSettings();
-        when(target.workflow(s, 11L)).thenReturn(workflow(11, "wf_a", "DRAFT", 21L));
-        when(target.file(s, 21L)).thenReturn(file(21, "sql_a", "DRAFT", "OFFLINE"));
-        when(target.fileSchedule(s, 21L)).thenReturn(schedule(41, true));
-        WorkflowControlService service = new WorkflowControlService(jdbc, settings, target);
-
-        var result = service.online(new WorkflowControlRequest(List.of(11L)));
-
-        assertEquals(0, result.successCount());
-        assertEquals(1, result.failureCount());
-        assertTrue(result.items().getFirst().message().contains("旧 dev_file_schedule"));
-        verify(target, never()).onlineFile(any(), anyLong());
-        verify(target, never()).publishFile(any(), anyLong());
-        verify(target, never()).publishWorkflow(any(), anyLong());
-        verify(target, never()).onlineWorkflow(any(), anyLong());
     }
 
     @Test
