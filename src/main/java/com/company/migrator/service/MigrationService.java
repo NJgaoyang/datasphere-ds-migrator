@@ -489,9 +489,16 @@ public class MigrationService {
             } else {
                 fileId = target.createFile(s, projectId, folderId, t.name(), type, taskContent(t), t.description());
             }
+            WorkflowRow ownerWorkflow = snapshot.workflows().stream()
+                    .filter(w -> w.code() == t.workflowCode() && w.version() == t.workflowVersion())
+                    .findFirst().orElse(null);
+            List<Map<String, String>> migratedParams = ownerWorkflow == null ? taskLocalParams(t) : mergedParams(ownerWorkflow, t);
+            target.saveExecutionParams(s, fileId, migratedParams);
             saveMap("TASK", String.valueOf(t.code()), t.version(), "DEV_FILE", String.valueOf(fileId), t.name());
             fileByTask.put(taskKey(t.code(), t.version()), fileId);
-            finishItem(itemId, "SUCCESS", "DEV_FILE", String.valueOf(fileId), existing == null ? "开发文件已创建" : "按 Task Code 复用并更新已有开发文件");
+            finishItem(itemId, "SUCCESS", "DEV_FILE", String.valueOf(fileId),
+                    (existing == null ? "开发文件已创建" : "按 Task Code 复用并更新已有开发文件")
+                            + "；已迁移 " + migratedParams.size() + " 个 Key/Value 运行参数");
             progress(runId, ++processed, total, "MIGRATE_TASK", t.name());
         }
 
@@ -651,6 +658,15 @@ public class MigrationService {
         return json(config);
     }
 
+    private JsonNode parseTaskParams(TaskRow task) {
+        try {
+            String raw = task.taskParams();
+            return mapper.readTree(raw == null || raw.isBlank() ? "{}" : raw);
+        } catch (Exception ignored) {
+            return mapper.createObjectNode();
+        }
+    }
+
     private List<TaskRow> workflowTasks(WorkflowRow workflow, List<TaskRow> tasks) {
         return tasks.stream().filter(t -> t.workflowCode() == workflow.code() && t.workflowVersion() == workflow.version()).toList();
     }
@@ -667,25 +683,47 @@ public class MigrationService {
         return selected;
     }
 
-    private List<Map<String, String>> mergedParams(WorkflowRow workflow, TaskRow task) {
+    List<Map<String, String>> mergedParams(WorkflowRow workflow, TaskRow task) {
         LinkedHashMap<String, String> values = new LinkedHashMap<>();
         if (workflow.globalParams() != null && !workflow.globalParams().isBlank()) {
             try { mergeParamArray(mapper.readTree(workflow.globalParams()), values); } catch (Exception ignored) { }
         }
-        JsonNode taskParams = source.parseTaskParams(task);
+        JsonNode taskParams = parseTaskParams(task);
         mergeParamArray(taskParams.path("localParams"), values);
         List<Map<String, String>> result = new ArrayList<>();
         values.forEach((key, value) -> result.add(Map.of("key", key, "value", value)));
         return result;
     }
 
-    private void mergeParamArray(JsonNode params, LinkedHashMap<String, String> values) {
-        if (params == null || !params.isArray()) return;
-        for (JsonNode param : params) {
-            String key = param.path("prop").asText(param.path("key").asText("")).trim();
-            if (key.isBlank() || !key.matches("[A-Za-z_][A-Za-z0-9_.-]*")) continue;
-            values.put(key, param.path("value").asText(""));
+    List<Map<String, String>> taskLocalParams(TaskRow task) {
+        LinkedHashMap<String, String> values = new LinkedHashMap<>();
+        mergeParamValues(parseTaskParams(task).path("localParams"), values);
+        List<Map<String, String>> result = new ArrayList<>();
+        values.forEach((key, value) -> result.add(Map.of("key", key, "value", value)));
+        return result;
+    }
+
+    void mergeParamArray(JsonNode params, LinkedHashMap<String, String> values) {
+        mergeParamValues(params, values);
+    }
+
+    private void mergeParamValues(JsonNode params, LinkedHashMap<String, String> values) {
+        if (params == null || params.isNull() || params.isMissingNode()) return;
+        if (params.isArray()) {
+            for (JsonNode param : params) mergeParamValues(param, values);
+            return;
         }
+        if (!params.isObject()) return;
+        String key = params.path("prop").asText(params.path("key").asText(params.path("name").asText(""))).trim();
+        if (!key.isBlank()) {
+            if (key.matches("[A-Za-z_][A-Za-z0-9_.-]*")) values.put(key, params.path("value").asText(""));
+            return;
+        }
+        params.fields().forEachRemaining(entry -> {
+            String mapKey = entry.getKey() == null ? "" : entry.getKey().trim();
+            if (mapKey.matches("[A-Za-z_][A-Za-z0-9_.-]*") && entry.getValue() != null && entry.getValue().isValueNode())
+                values.put(mapKey, entry.getValue().asText(""));
+        });
     }
 
     private Map<Long, int[]> parseLocations(String raw) {

@@ -73,6 +73,21 @@ public class DataSphereClient {
         return data(get(settings, "/api/files/" + fileId));
     }
 
+    public JsonNode fileExecutionConfig(Settings settings, long fileId) {
+        return data(get(settings, "/api/development/files/" + fileId + "/execution-config"));
+    }
+
+    public void saveExecutionParams(Settings settings, long fileId, List<Map<String, String>> localParams) {
+        JsonNode current = fileExecutionConfig(settings, fileId);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("timezone", current.path("timezone").asText("Asia/Shanghai"));
+        payload.put("dataSourceId", current.hasNonNull("dataSourceId") ? current.path("dataSourceId").asLong() : null);
+        payload.put("databaseName", current.path("databaseName").asText(""));
+        payload.put("bizDateParam", current.path("bizDateParam").asText("${system.biz.date}"));
+        payload.put("localParams", localParams == null ? List.of() : localParams);
+        data(put(settings, "/api/development/files/" + fileId + "/execution-config", payload));
+    }
+
     public String fileType(Settings settings, long fileId) {
         return file(settings, fileId).path("fileType").asText("");
     }
