@@ -25,15 +25,15 @@ public class DataSphereClient {
             JsonNode me = data(get(settings, "/api/auth/me"));
             String username = me.path("username").asText(settings.targetUsername());
             String role = me.path("roleCode").asText("");
-            return new TargetCheck(true, "DataSphere 登录成功：" + username, role.isBlank() ? username : username + " / " + role);
+            return new TargetCheck(true, "DataForge 登录成功：" + username, role.isBlank() ? username : username + " / " + role);
         } catch (Exception ex) {
-            return new TargetCheck(false, "DataSphere 登录失败：" + rootMessage(ex), "");
+            return new TargetCheck(false, "DataForge 登录失败：" + rootMessage(ex), "");
         }
     }
 
     public long singleProjectId(Settings settings) {
         JsonNode data = data(get(settings, "/api/projects"));
-        if (!data.isArray() || data.isEmpty()) throw new IllegalStateException("DataSphere 没有可用开发项目");
+        if (!data.isArray() || data.isEmpty()) throw new IllegalStateException("DataForge 没有可用开发项目");
         return data.get(0).path("id").asLong();
     }
 
@@ -78,7 +78,9 @@ public class DataSphereClient {
     }
 
     public String fileLifecycleStatus(Settings settings, long fileId) {
-        return file(settings, fileId).path("lifecycleStatus").asText("");
+        JsonNode row = file(settings, fileId);
+        String status = row.path("status").asText("").trim();
+        return status.isBlank() ? row.path("lifecycleStatus").asText("") : status;
     }
 
     public JsonNode fileSchedule(Settings settings, long fileId) {
@@ -86,19 +88,39 @@ public class DataSphereClient {
     }
 
     public JsonNode onlineFile(Settings settings, long fileId) {
-        return data(post(settings, "/api/files/" + fileId + "/online", Map.of()));
+        if ("PUBLISHED".equalsIgnoreCase(fileLifecycleStatus(settings, fileId))) return file(settings, fileId);
+        return data(post(settings, "/api/development/lifecycle/files/" + fileId + "/publish-online", Map.of()));
     }
 
     public JsonNode publishFile(Settings settings, long fileId) {
-        return data(post(settings, "/api/files/" + fileId + "/publish", Map.of()));
+        if ("PUBLISHED".equalsIgnoreCase(fileLifecycleStatus(settings, fileId))) return file(settings, fileId);
+        return data(post(settings, "/api/development/lifecycle/files/" + fileId + "/publish-online", Map.of()));
     }
 
     public void offlineFile(Settings settings, long fileId) {
-        data(post(settings, "/api/files/" + fileId + "/offline", Map.of()));
+        String status = fileLifecycleStatus(settings, fileId);
+        if (!"PUBLISHED".equalsIgnoreCase(status) && !"ONLINE".equalsIgnoreCase(status)) return;
+        data(post(settings, "/api/development/lifecycle/files/" + fileId + "/offline", Map.of()));
     }
 
     public void deleteFile(Settings settings, long fileId) {
         request(settings).delete().uri("/api/files/" + fileId).retrieve().toBodilessEntity();
+    }
+
+    public boolean recycledFileExists(Settings settings, long fileId) {
+        try {
+            long projectId = singleProjectId(settings);
+            JsonNode rows = data(get(settings, "/api/files/recycle?projectId=" + projectId));
+            if (!rows.isArray()) return false;
+            for (JsonNode row : rows) if (row.path("id").asLong(0) == fileId) return true;
+            return false;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    public void permanentlyDeleteFile(Settings settings, long fileId) {
+        request(settings).delete().uri("/api/files/" + fileId + "/permanent").retrieve().toBodilessEntity();
     }
 
     public long createWorkflow(Settings settings, Map<String, Object> payload) {
@@ -130,7 +152,7 @@ public class DataSphereClient {
     }
 
     public JsonNode offlineWorkflow(Settings settings, long workflowId) {
-        return data(post(settings, "/api/scheduler/workflows/" + workflowId + "/offline", Map.of()));
+        return data(post(settings, "/api/workflows/" + workflowId + "/offline", Map.of()));
     }
 
     public JsonNode runWorkflow(Settings settings, long workflowId) {
@@ -158,7 +180,7 @@ public class DataSphereClient {
     public String workflowCode(Settings settings, long workflowId) {
         JsonNode row = workflow(settings, workflowId);
         String code = row.path("workflowCode").asText("").trim();
-        if (code.isBlank()) throw new IllegalStateException("DataSphere Workflow #" + workflowId + " 未返回 workflowCode");
+        if (code.isBlank()) throw new IllegalStateException("DataForge Workflow #" + workflowId + " 未返回 workflowCode");
         return code;
     }
 
@@ -168,6 +190,21 @@ public class DataSphereClient {
 
     public void deleteWorkflow(Settings settings, long workflowId) {
         request(settings).delete().uri("/api/workflows/" + workflowId).retrieve().toBodilessEntity();
+    }
+
+    public void deleteWorkflowDependencies(Settings settings, String workflowCode) {
+        if (workflowCode == null || workflowCode.isBlank()) return;
+        JsonNode rows = data(get(settings, "/api/scheduler/dependencies"));
+        if (!rows.isArray()) return;
+        for (JsonNode row : rows) {
+            String downstream = row.path("downstreamWorkflowCode").asText("");
+            String upstream = row.path("upstreamWorkflowCode").asText("");
+            if (!workflowCode.equals(downstream) && !workflowCode.equals(upstream)) continue;
+            long dependencyId = row.path("id").asLong(0);
+            if (dependencyId > 0) {
+                request(settings).delete().uri("/api/scheduler/dependencies?id=" + dependencyId).retrieve().toBodilessEntity();
+            }
+        }
     }
 
     public void saveSchedule(Settings settings, long workflowId, String cron, String timezone, String failureStrategy, String workerGroup) {
@@ -210,7 +247,7 @@ public class DataSphereClient {
     private RestClient request(Settings settings) {
         String cookie = sessionCookie(settings);
         return RestClient.builder().baseUrl(baseUrl(settings))
-                .defaultHeader("X-Requested-With", "DataSphere")
+                .defaultHeader("X-Requested-With", "DataForge")
                 .defaultHeader(HttpHeaders.COOKIE, cookie).build();
     }
 
@@ -228,35 +265,35 @@ public class DataSphereClient {
             if (existing != null && !existing.isBlank()) return existing;
         }
         RestClient client = RestClient.builder().baseUrl(baseUrl(settings))
-                .defaultHeader("X-Requested-With", "DataSphere").build();
+                .defaultHeader("X-Requested-With", "DataForge").build();
         Map<String, Object> payload = Map.of("username", settings.targetUsername().trim(), "password", settings.targetPassword());
         ResponseEntity<JsonNode> response = client.post().uri("/api/auth/login")
                 .contentType(MediaType.APPLICATION_JSON).body(payload).retrieve().toEntity(JsonNode.class);
         data(response.getBody());
         String setCookie = response.getHeaders().getFirst(HttpHeaders.SET_COOKIE);
-        if (setCookie == null || setCookie.isBlank()) throw new IllegalStateException("DataSphere 登录成功但未返回 platform_session Cookie");
+        if (setCookie == null || setCookie.isBlank()) throw new IllegalStateException("DataForge 登录成功但未返回 platform_session Cookie");
         String cookie = setCookie.split(";", 2)[0].trim();
-        if (!cookie.startsWith("platform_session=")) throw new IllegalStateException("DataSphere 未返回有效 platform_session Cookie");
+        if (!cookie.startsWith("platform_session=")) throw new IllegalStateException("DataForge 未返回有效 platform_session Cookie");
         sessionCookies.put(key, cookie);
         return cookie;
     }
 
     private void requireCredentials(Settings settings) {
-        if (settings.targetUsername() == null || settings.targetUsername().isBlank()) throw new IllegalStateException("请配置 DataSphere 登录用户名");
-        if (settings.targetPassword() == null || settings.targetPassword().isBlank()) throw new IllegalStateException("请配置 DataSphere 登录密码");
+        if (settings.targetUsername() == null || settings.targetUsername().isBlank()) throw new IllegalStateException("请配置 DataForge 登录用户名");
+        if (settings.targetPassword() == null || settings.targetPassword().isBlank()) throw new IllegalStateException("请配置 DataForge 登录密码");
     }
 
     private String sessionKey(Settings settings) { return baseUrl(settings) + "|" + settings.targetUsername().trim().toLowerCase(Locale.ROOT); }
     private String baseUrl(Settings settings) {
         String base = settings.targetBaseUrl() == null ? "" : settings.targetBaseUrl().trim();
         while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
-        if (base.isBlank()) throw new IllegalStateException("请配置 DataSphere Base URL");
+        if (base.isBlank()) throw new IllegalStateException("请配置 DataForge Base URL");
         return base;
     }
 
     private JsonNode data(JsonNode root) {
-        if (root == null) throw new IllegalStateException("DataSphere 返回空响应");
-        if (root.has("success") && !root.path("success").asBoolean()) throw new IllegalStateException(root.path("message").asText("DataSphere 请求失败"));
+        if (root == null) throw new IllegalStateException("DataForge 返回空响应");
+        if (root.has("success") && !root.path("success").asBoolean()) throw new IllegalStateException(root.path("message").asText("DataForge 请求失败"));
         return root.has("data") ? root.path("data") : root;
     }
 
