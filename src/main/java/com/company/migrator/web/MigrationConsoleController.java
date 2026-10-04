@@ -33,7 +33,7 @@ public class MigrationConsoleController {
     }
 
     @GetMapping("/health")
-    public Map<String,Object> health() { return Map.of("success", true, "service", "datasphere-ds-migrator", "version", "0.1.0"); }
+    public Map<String,Object> health() { return Map.of("success", true, "service", "dataforge-ds-migrator", "version", "0.2.0"); }
 
     @GetMapping("/settings")
     public SettingsView settings() { return settings.view(); }
@@ -61,6 +61,9 @@ public class MigrationConsoleController {
 
     @PostMapping("/cleanup")
     public CleanupResult cleanup(@RequestBody CleanupRequest request) { return cleanup.cleanup(request); }
+
+    @PostMapping("/cleanup/all")
+    public CleanupResult cleanupAll() { return cleanup.cleanup(new CleanupRequest(true, true)); }
 
     @GetMapping("/sql-dependencies/scan")
     public SqlDependencyScanResult scanSqlDependencies() { return sqlDependencies.scan(); }
@@ -110,6 +113,12 @@ public class MigrationConsoleController {
     public OperationResult migrate(@RequestBody(required = false) StartMigrationRequest request) {
         long id = migrations.startMigration(request);
         return new OperationResult(true, request == null || request.dryRunValue() ? "试运行任务已创建" : "迁移任务已创建", id);
+    }
+
+    @PostMapping("/runs/migrate-all")
+    public OperationResult migrateAll() {
+        long id = migrations.startMigration(new StartMigrationRequest(null, false, true, List.of()));
+        return new OperationResult(true, "DataForge 一键迁移任务已创建", id);
     }
 
     @PostMapping("/runs/{runId}/cancel")
