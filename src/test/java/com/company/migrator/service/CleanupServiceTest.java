@@ -15,7 +15,7 @@ import static org.mockito.Mockito.when;
 
 class CleanupServiceTest {
     @Test
-    void deletesWorkflowBeforeDevelopmentFileAndClearsSuccessfulMappings() {
+    void deletesDependenciesAndWorkflowBeforePermanentlyDeletingDevelopmentFile() {
         JdbcTemplate jdbc = jdbc("cleanup_order");
         jdbc.update("INSERT INTO migration_object_map(source_type,source_code,source_version,target_type,target_id,target_name) VALUES('WORKFLOW','100',1,'WORKFLOW','11','wf_a')");
         jdbc.update("INSERT INTO migration_object_map(source_type,source_code,source_version,target_type,target_id,target_name) VALUES('TASK','200',1,'DEV_FILE','21','sql_a')");
@@ -23,6 +23,8 @@ class CleanupServiceTest {
         when(settings.get()).thenReturn(targetSettings());
         DataSphereClient target = mock(DataSphereClient.class);
         when(target.workflowExists(targetSettings(), 11L)).thenReturn(true);
+        when(target.workflowCode(targetSettings(), 11L)).thenReturn("WF_11");
+        when(target.workflowStatus(targetSettings(), 11L)).thenReturn("PUBLISHED");
         when(target.fileExists(targetSettings(), 21L)).thenReturn(true);
         when(target.fileLifecycleStatus(targetSettings(), 21L)).thenReturn("OFFLINE");
         CleanupService service = new CleanupService(jdbc, settings, target);
@@ -40,21 +42,26 @@ class CleanupServiceTest {
 
         var ordered = inOrder(target);
         ordered.verify(target).workflowExists(targetSettings(), 11L);
+        ordered.verify(target).workflowCode(targetSettings(), 11L);
+        ordered.verify(target).deleteWorkflowDependencies(targetSettings(), "WF_11");
+        ordered.verify(target).workflowStatus(targetSettings(), 11L);
+        ordered.verify(target).offlineWorkflow(targetSettings(), 11L);
         ordered.verify(target).deleteWorkflow(targetSettings(), 11L);
         ordered.verify(target).fileExists(targetSettings(), 21L);
         ordered.verify(target).fileLifecycleStatus(targetSettings(), 21L);
         ordered.verify(target).deleteFile(targetSettings(), 21L);
+        ordered.verify(target).permanentlyDeleteFile(targetSettings(), 21L);
     }
 
     @Test
-    void cleanupAutomaticallyOfflinesOnlineDevelopmentTaskBeforeDeletingIt() {
+    void cleanupAutomaticallyOfflinesPublishedDevelopmentTaskBeforeDeletingIt() {
         JdbcTemplate jdbc = jdbc("cleanup_online");
         jdbc.update("INSERT INTO migration_object_map(source_type,source_code,source_version,target_type,target_id,target_name) VALUES('TASK','200',1,'DEV_FILE','21','sql_a')");
         SettingService settings = mock(SettingService.class);
         when(settings.get()).thenReturn(targetSettings());
         DataSphereClient target = mock(DataSphereClient.class);
         when(target.fileExists(targetSettings(), 21L)).thenReturn(true);
-        when(target.fileLifecycleStatus(targetSettings(), 21L)).thenReturn("ONLINE");
+        when(target.fileLifecycleStatus(targetSettings(), 21L)).thenReturn("PUBLISHED");
         CleanupService service = new CleanupService(jdbc, settings, target);
 
         var result = service.cleanup(new CleanupRequest(true, false));
@@ -68,10 +75,34 @@ class CleanupServiceTest {
         ordered.verify(target).fileLifecycleStatus(targetSettings(), 21L);
         ordered.verify(target).offlineFile(targetSettings(), 21L);
         ordered.verify(target).deleteFile(targetSettings(), 21L);
+        ordered.verify(target).permanentlyDeleteFile(targetSettings(), 21L);
     }
 
     @Test
-    void oneClickOfflineOnlyOfflinesOnlineMappedDevelopmentTasksAndKeepsMappings() {
+    void cleanupPermanentlyDeletesAlreadyRecycledMappedDevelopmentTask() {
+        JdbcTemplate jdbc = jdbc("cleanup_recycled");
+        jdbc.update("INSERT INTO migration_object_map(source_type,source_code,source_version,target_type,target_id,target_name) VALUES('TASK','200',1,'DEV_FILE','21','sql_recycled')");
+        SettingService settings = mock(SettingService.class);
+        when(settings.get()).thenReturn(targetSettings());
+        DataSphereClient target = mock(DataSphereClient.class);
+        when(target.fileExists(targetSettings(), 21L)).thenReturn(false);
+        when(target.recycledFileExists(targetSettings(), 21L)).thenReturn(true);
+        CleanupService service = new CleanupService(jdbc, settings, target);
+
+        var result = service.cleanup(new CleanupRequest(true, false));
+        assertTrue(result.success());
+        assertEquals(0, result.deletedDevelopmentTasks());
+        assertEquals(1, result.deletedRecycledDevelopmentTasks());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM migration_object_map", Integer.class));
+
+        var ordered = inOrder(target);
+        ordered.verify(target).fileExists(targetSettings(), 21L);
+        ordered.verify(target).recycledFileExists(targetSettings(), 21L);
+        ordered.verify(target).permanentlyDeleteFile(targetSettings(), 21L);
+    }
+
+    @Test
+    void oneClickOfflineOnlyOfflinesPublishedMappedDevelopmentTasksAndKeepsMappings() {
         JdbcTemplate jdbc = jdbc("offline_development");
         jdbc.update("INSERT INTO migration_object_map(source_type,source_code,source_version,target_type,target_id,target_name) VALUES('TASK','200',1,'DEV_FILE','21','sql_online')");
         jdbc.update("INSERT INTO migration_object_map(source_type,source_code,source_version,target_type,target_id,target_name) VALUES('TASK','201',1,'DEV_FILE','22','sql_offline')");
@@ -80,7 +111,7 @@ class CleanupServiceTest {
         DataSphereClient target = mock(DataSphereClient.class);
         when(target.fileExists(targetSettings(), 21L)).thenReturn(true);
         when(target.fileExists(targetSettings(), 22L)).thenReturn(true);
-        when(target.fileLifecycleStatus(targetSettings(), 21L)).thenReturn("ONLINE");
+        when(target.fileLifecycleStatus(targetSettings(), 21L)).thenReturn("PUBLISHED");
         when(target.fileLifecycleStatus(targetSettings(), 22L)).thenReturn("OFFLINE");
         CleanupService service = new CleanupService(jdbc, settings, target);
 
@@ -107,6 +138,6 @@ class CleanupServiceTest {
     }
 
     private Settings targetSettings() {
-        return new Settings("jdbc:mysql://source", "source", "secret", "http://datasphere", "admin", "password");
+        return new Settings("jdbc:mysql://source", "source", "secret", "http://dataforge", "admin", "password");
     }
 }
