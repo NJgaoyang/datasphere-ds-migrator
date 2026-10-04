@@ -2,13 +2,13 @@
   <div class="page-shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow">DATASPHERE MIGRATION TOOL</div>
+        <div class="eyebrow">DATAFORGE MIGRATION TOOL</div>
         <h1>DolphinScheduler 3.1.9 迁移控制台</h1>
-        <p>独立迁移工具 · 分析 / 试运行 / 正式迁移 / 问题跟踪</p>
+        <p>独立迁移工具 · 一键迁移 / 分析 / 试运行 / 问题跟踪</p>
       </div>
       <div class="header-actions">
         <el-button @click="loadAll">刷新</el-button>
-        <el-button v-if="mainTab === 'analysis'" type="primary" :loading="actionLoading" @click="startAnalyze">开始分析</el-button>
+        <el-button v-if="mainTab === 'analysis'" type="primary" :loading="actionLoading" @click="startOneClickMigration">一键迁移全部</el-button>
       </div>
     </header>
 
@@ -16,13 +16,14 @@
       <el-tab-pane label="元数据分析" name="analysis">
     <section class="panel action-panel">
       <div class="section-title">
-        <div><h2>迁移操作</h2><span>Workflow 统一迁到 Native Scheduler；正式迁移不会自动发布、上线或启用调度</span></div>
+        <div><h2>迁移操作</h2><span>Workflow 统一迁到 DataForge Native Scheduler；正式迁移不会自动发布、上线或启用调度</span></div>
       </div>
       <div class="action-row">
-        <el-button type="primary" :loading="actionLoading" @click="startAnalyze">1. 分析元数据</el-button>
+        <el-button type="primary" :loading="actionLoading" @click="startOneClickMigration">一键迁移全部</el-button>
+        <el-button :loading="actionLoading" @click="startAnalyze">1. 分析元数据</el-button>
         <el-button :loading="actionLoading" :disabled="!scopeReady" @click="startDryRun">2. 试运行</el-button>
-        <el-button type="danger" plain :loading="actionLoading" :disabled="!scopeReady" @click="startMigration">3. 正式迁移</el-button>
-        <span class="action-hint">建议先处理 ERROR 问题，再执行正式迁移。</span>
+        <el-button type="danger" plain :loading="actionLoading" :disabled="!scopeReady" @click="startMigration">3. 按选择正式迁移</el-button>
+        <span class="action-hint">一键迁移会直接迁移全部可支持对象；精细迁移仍可先分析、试运行后按范围执行。</span>
       </div>
     </section>
 
@@ -136,7 +137,7 @@
       <el-tab-pane label="数据库设置" name="settings">
     <section class="panel config-panel">
       <div class="section-title">
-        <div><h2>连接配置</h2><span>源端只读，目标端使用 DataSphere 账号登录后通过 REST API 写入</span></div>
+        <div><h2>连接配置</h2><span>源端只读，目标端使用 DataForge 账号登录后通过 REST API 写入</span></div>
       </div>
       <div class="config-grid">
           <div class="config-block">
@@ -152,14 +153,14 @@
             </el-form>
           </div>
           <div class="config-block">
-            <div class="block-title">DataSphere</div>
+            <div class="block-title">DataForge</div>
             <el-form label-position="top">
               <el-form-item label="Base URL"><el-input v-model="settings.targetBaseUrl" /></el-form-item>
               <div class="two-col">
                 <el-form-item label="登录用户名"><el-input v-model="settings.targetUsername" placeholder="例如 admin" /></el-form-item>
                 <el-form-item label="登录密码"><el-input v-model="settings.targetPassword" type="password" show-password placeholder="留空表示不修改" /></el-form-item>
               </div>
-              <el-button :loading="testTargetLoading" @click="testTarget">登录并测试 DataSphere</el-button>
+              <el-button :loading="testTargetLoading" @click="testTarget">登录并测试 DataForge</el-button>
               <span class="configured" v-if="settings.targetPasswordConfigured">已配置密码</span>
             </el-form>
           </div>
@@ -318,9 +319,27 @@ async function startAnalyze() {
     await loadRuns(); const run = runs.value.find(r => r.id === data.runId); if (run) await selectRun(run)
   } catch (e) { showError(e) } finally { actionLoading.value = false }
 }
+
+async function startOneClickMigration() {
+  try {
+    await ElMessageBox.confirm(
+      '将直接读取 DolphinScheduler 3.1.9 当前全部工作流，并把可支持的目录、开发文件、DAG、工作流与调度迁入 DataForge。迁移后的工作流保持 Draft/Offline，调度保持 disabled，不会自动切生产。是否继续？',
+      '确认一键迁移全部',
+      { type: 'warning', confirmButtonText: '开始迁移', cancelButtonText: '取消' }
+    )
+  } catch (_) { return }
+  actionLoading.value = true
+  try {
+    await saveSettings()
+    const { data } = await axios.post('/api/runs/migrate-all')
+    ElMessage.success(data.message)
+    await loadRuns(); const run = runs.value.find(r => r.id === data.runId); if (run) await selectRun(run)
+  } catch (e) { showError(e) } finally { actionLoading.value = false }
+}
+
 async function startDryRun() { await startMigrate(true) }
 async function startMigration() {
-  await ElMessageBox.confirm(`将迁移已选择的 ${selectedWorkflowCount.value} 个工作流，并在 DataSphere 创建对应目录、开发文件、工作流和 disabled 调度。不会自动发布/上线。是否继续？`, '确认正式迁移', { type: 'warning' })
+  await ElMessageBox.confirm(`将迁移已选择的 ${selectedWorkflowCount.value} 个工作流，并在 DataForge 创建对应目录、开发文件、工作流和 disabled 调度。不会自动发布/上线。是否继续？`, '确认正式迁移', { type: 'warning' })
   await startMigrate(false)
 }
 
