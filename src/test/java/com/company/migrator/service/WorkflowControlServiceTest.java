@@ -29,7 +29,8 @@ class WorkflowControlServiceTest {
         when(target.workflow(s, 11L)).thenReturn(workflow(11, "wf_a", "DRAFT", 21L));
         when(target.file(s, 21L)).thenReturn(file(21, "sql_a", "DRAFT", "OFFLINE"));
         when(target.workflowStatus(s, 11L)).thenReturn("DRAFT");
-        when(target.workflowSchedule(s, 11L)).thenReturn(schedule(31, false, false), schedule(31, true, true));
+        when(target.workflowSchedule(s, 11L)).thenReturn(schedule(31, false, false));
+        when(target.onlineWorkflow(s, 11L)).thenReturn(schedule(31, true, true));
         when(target.workflowPreflight(s, 11L)).thenReturn(preflight(true, "通过"));
         WorkflowControlService service = new WorkflowControlService(jdbc, settings, target);
 
@@ -74,6 +75,7 @@ class WorkflowControlServiceTest {
         Settings s = targetSettings();
         when(target.workflow(s, 11L)).thenReturn(workflow(11, "wf_a", "PUBLISHED"));
         when(target.workflowSchedule(s, 11L)).thenReturn(schedule(31, true));
+        when(target.offlineWorkflow(s, 11L)).thenReturn(schedule(31, false, false));
         WorkflowControlService service = new WorkflowControlService(jdbc, settings, target);
 
         var result = service.offline(new WorkflowControlRequest(List.of(11L)));
