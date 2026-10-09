@@ -111,22 +111,30 @@ public class WorkflowControlService {
             try {
                 JsonNode workflow = target.workflow(s, row.id());
                 String name = displayName(row, workflow);
+                String status = workflow.path("status").asText("");
+                if ("PUBLISHED".equalsIgnoreCase(status)) {
+                    // Workflow lifecycle offline also disables effective Cron scheduling.
+                    target.unpublishWorkflow(s, row.id());
+                } else if (!"OFFLINE".equalsIgnoreCase(status) && !"DRAFT".equalsIgnoreCase(status)) {
+                    results.add(failure(row.id(), name, "BLOCKED", "当前工作流状态不支持下线：" + status));
+                    continue;
+                }
+                // Clear desiredEnabled as well: otherwise publishing again can reactivate Cron.
                 JsonNode schedule = target.workflowSchedule(s, row.id());
-                if (schedule.path("id").asLong(0) == 0) {
-                    results.add(success(row.id(), name, "OFFLINE", "未配置 Cron；工作流发布定义保持不变", null));
-                    continue;
+                if (schedule.path("id").asLong(0) > 0
+                        && (schedule.path("enabled").asBoolean(false)
+                            || schedule.path("desiredEnabled").asBoolean(false))) {
+                    target.offlineWorkflow(s, row.id());
                 }
-                JsonNode inactive = schedule;
-                if (schedule.path("enabled").asBoolean(false)
-                        || schedule.path("desiredEnabled").asBoolean(false)) {
-                    inactive = target.offlineWorkflow(s, row.id());
-                }
-                if (inactive.path("enabled").asBoolean(false)
+                JsonNode refreshed = target.workflow(s, row.id());
+                JsonNode inactive = target.workflowSchedule(s, row.id());
+                if ("PUBLISHED".equalsIgnoreCase(refreshed.path("status").asText(""))
+                        || inactive.path("enabled").asBoolean(false)
                         || inactive.path("desiredEnabled").asBoolean(false)) {
-                    results.add(failure(row.id(), name, "BLOCKED", "Native Scheduler 调度仍处于已启用或待启用状态"));
+                    results.add(failure(row.id(), name, "BLOCKED", "工作流生命周期或调度状态仍未下线"));
                     continue;
                 }
-                results.add(success(row.id(), name, "OFFLINE", "已关闭 Cron 和待启用状态；发布定义保留，可手动运行", null));
+                results.add(success(row.id(), name, "OFFLINE", "工作流已下线，自动调度已关闭", null));
             } catch (Exception ex) {
                 results.add(failure(row.id(), row.name(), "FAILED", rootMessage(ex)));
             }
