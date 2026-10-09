@@ -259,7 +259,7 @@ public class DataSphereClient {
         payload.put("cronExpression", cron);
         payload.put("timezone", timezone == null || timezone.isBlank() ? "Asia/Shanghai" : timezone);
         payload.put("enabled", false); payload.put("failureStrategy", normalizeFailureStrategy(failureStrategy));
-        payload.put("parallelism", 1); payload.put("workerGroup", workerGroup == null || workerGroup.isBlank() ? "default" : workerGroup);
+        // Avoid serializing all scheduled occurrences during migration. The target scheduler\n        // still enforces its per-worker slots and each workflow DAG dependencies.\n        payload.put("parallelism", 16); payload.put("workerGroup", workerGroup == null || workerGroup.isBlank() ? "default" : workerGroup);
         payload.put("alertGroup", "");
         data(put(settings, "/api/scheduler/workflows/" + workflowId + "/schedule", payload));
     }
