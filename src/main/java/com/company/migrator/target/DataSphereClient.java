@@ -235,6 +235,10 @@ public class DataSphereClient {
         return workflow(settings, workflowId).path("status").asText("");
     }
 
+    public void unpublishWorkflow(Settings settings, long workflowId) {
+        data(post(settings, "/api/workflows/" + workflowId + "/offline", Map.of()));
+    }
+
     public void deleteWorkflow(Settings settings, long workflowId) {
         request(settings).delete().uri("/api/workflows/" + workflowId).retrieve().toBodilessEntity();
     }
