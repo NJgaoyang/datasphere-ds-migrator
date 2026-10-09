@@ -71,30 +71,28 @@ public class WorkflowControlService {
 
                 JsonNode schedule = target.workflowSchedule(s, row.id());
                 boolean configured = schedule.path("id").asLong(0) > 0;
-                if (configured && !schedule.path("desiredEnabled").asBoolean(false)) {
-                    // Draft/Offline 时这里只写 desiredEnabled=true；发布快照完成后 DataForge 会真正激活。
-                    target.onlineWorkflow(s, row.id());
-                }
-
+                // Publication may fail or require approval. Never enable Cron before
+                // the published snapshot is actually available.
                 if (!"PUBLISHED".equalsIgnoreCase(target.workflowStatus(s, row.id()))) {
                     target.publishWorkflow(s, row.id());
                 }
                 if (!configured) {
-                    results.add(success(row.id(), name, "PUBLISHED", "工作流已发布；源端无调度配置，保留手动运行", null));
+                    results.add(success(row.id(), name, "PUBLISHED", "工作流已发布；未配置 Cron，仅支持手动运行", null));
                     continue;
                 }
-
                 JsonNode preflight = target.workflowPreflight(s, row.id());
                 if (!preflight.path("ready").asBoolean(false)) {
                     results.add(failure(row.id(), name, "BLOCKED", preflight.path("message").asText("生产切换检查未通过")));
                     continue;
                 }
                 JsonNode active = target.workflowSchedule(s, row.id());
-                if (!active.path("enabled").asBoolean(false)) {
+                if (!active.path("enabled").asBoolean(false)
+                        || !active.path("desiredEnabled").asBoolean(false)) {
                     active = target.onlineWorkflow(s, row.id());
                 }
-                if (!active.path("enabled").asBoolean(false)) {
-                    results.add(failure(row.id(), name, "BLOCKED", "Workflow 已发布，但 Native Scheduler 未能激活"));
+                if (!active.path("enabled").asBoolean(false)
+                        || !active.path("desiredEnabled").asBoolean(false)) {
+                    results.add(failure(row.id(), name, "BLOCKED", "Native Scheduler 启用状态未生效"));
                     continue;
                 }
                 results.add(success(row.id(), name, "ONLINE", "工作流已发布，源端 Cron 已启用 Native Scheduler", null));
@@ -114,12 +112,21 @@ public class WorkflowControlService {
                 JsonNode workflow = target.workflow(s, row.id());
                 String name = displayName(row, workflow);
                 JsonNode schedule = target.workflowSchedule(s, row.id());
-                if (schedule.path("id").asLong(0) == 0 || !schedule.path("enabled").asBoolean(false)) {
-                    results.add(success(row.id(), name, "OFFLINE", "Native Scheduler 调度已离线或未配置；已发布定义保持不变", null));
+                if (schedule.path("id").asLong(0) == 0) {
+                    results.add(success(row.id(), name, "OFFLINE", "未配置 Cron；工作流发布定义保持不变", null));
                     continue;
                 }
-                target.offlineWorkflow(s, row.id());
-                results.add(success(row.id(), name, "OFFLINE", "Native Scheduler 自动调度已下线；已发布定义仍可手动运行", null));
+                JsonNode inactive = schedule;
+                if (schedule.path("enabled").asBoolean(false)
+                        || schedule.path("desiredEnabled").asBoolean(false)) {
+                    inactive = target.offlineWorkflow(s, row.id());
+                }
+                if (inactive.path("enabled").asBoolean(false)
+                        || inactive.path("desiredEnabled").asBoolean(false)) {
+                    results.add(failure(row.id(), name, "BLOCKED", "Native Scheduler 调度仍处于已启用或待启用状态"));
+                    continue;
+                }
+                results.add(success(row.id(), name, "OFFLINE", "已关闭 Cron 和待启用状态；发布定义保留，可手动运行", null));
             } catch (Exception ex) {
                 results.add(failure(row.id(), row.name(), "FAILED", rootMessage(ex)));
             }
