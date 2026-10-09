@@ -18,6 +18,16 @@
     <el-alert type="info" :closable="false" show-icon
       title="迁移阶段会保留源端 Cron 但默认暂停，避免迁移即双跑。一键上线才会正式发布 Workflow 并开启该 Cron；无源端调度的 Workflow 只发布，不自动创建默认 Cron。" />
 
+    <div class="folder-toolbar">
+      <span>项目文件夹</span>
+      <el-select v-model="selectedFolder" placeholder="选择项目文件夹" style="width:260px">
+        <el-option label="全部项目文件夹" value="__ALL__" />
+        <el-option v-for="folder in projectFolders" :key="folder" :label="`${folder}（${folderCount(folder)}）`" :value="folder" />
+      </el-select>
+      <el-button @click="selectVisible">勾选当前文件夹全部</el-button>
+      <el-button @click="clearSelected">清除勾选</el-button>
+      <span class="folder-count">当前文件夹 {{ visibleWorkflows.length }} 个工作流</span>
+    </div>
     <div class="action-bar">
       <span>已选择 <strong>{{ selectedIds.length }}</strong> / {{ snapshot.totalCount || 0 }} 个 Workflow</span>
       <span class="spacer" />
@@ -26,8 +36,9 @@
       <el-button type="primary" :loading="actionLoading === 'run'" :disabled="!selectedIds.length || !!actionLoading" @click="runSelected">批量运行</el-button>
     </div>
 
-    <el-table ref="tableRef" :data="snapshot.workflows || []" height="480" row-key="workflowId" @selection-change="selectionChanged">
+    <el-table ref="tableRef" :data="visibleWorkflows" height="480" row-key="workflowId" @selection-change="selectionChanged">
       <el-table-column type="selection" width="48" reserve-selection />
+      <el-table-column prop="projectFolder" label="项目文件夹" min-width="145" show-overflow-tooltip />
       <el-table-column prop="name" label="Workflow" min-width="190" show-overflow-tooltip />
       <el-table-column prop="workflowCode" label="编码" min-width="170" show-overflow-tooltip />
       <el-table-column label="定义状态" width="110">
@@ -73,7 +84,7 @@
 
 <script setup>
 import axios from 'axios'
-import { nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const snapshot = ref({ totalCount: 0, publishedCount: 0, onlineCount: 0, readyCount: 0, workflows: [] })
@@ -81,6 +92,12 @@ const loading = ref(false)
 const actionLoading = ref('')
 const selectedIds = ref([])
 const tableRef = ref(null)
+const selectedFolder = ref('__ALL__')
+const projectFolders = computed(() => [...new Set((snapshot.value.workflows || []).map(w => w.projectFolder || '未分类项目'))].sort((a,b) => a.localeCompare(b,'zh-CN')))
+const visibleWorkflows = computed(() => (snapshot.value.workflows || []).filter(w => selectedFolder.value === '__ALL__' || (w.projectFolder || '未分类项目') === selectedFolder.value))
+const folderCount = folder => (snapshot.value.workflows || []).filter(w => (w.projectFolder || '未分类项目') === folder).length
+async function selectVisible() { await nextTick(); visibleWorkflows.value.forEach(row => tableRef.value?.toggleRowSelection(row,true)) }
+function clearSelected() { tableRef.value?.clearSelection(); selectedIds.value=[] }
 const lastResult = ref(null)
 
 const definitionLabel = status => ({ DRAFT: '草稿', PUBLISHED: '已发布', MISSING: '不存在' }[status] || status || '-')
@@ -139,7 +156,7 @@ async function execute(action, ids) {
 
 function showError(e) { ElMessage.error(e?.response?.data?.message || e?.message || String(e)) }
 
-onMounted(() => load(true))
+onMounted(() => load(false))
 </script>
 
 <style scoped>
@@ -148,7 +165,7 @@ onMounted(() => load(true))
 .control-heading h2{margin:0 0 6px;font-size:18px}.control-heading p{margin:0;color:#6b7280;line-height:1.6}
 .metric-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
 .metric-grid>div{padding:14px 16px;border:1px solid #e5e7eb;border-radius:8px;background:#fff}.metric-grid span{display:block;color:#6b7280;font-size:13px}.metric-grid strong{display:block;margin-top:6px;font-size:24px}
-.action-bar{display:flex;align-items:center;gap:10px;margin:16px 0;padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fafafa}.spacer{flex:1}
+.folder-toolbar{display:flex;align-items:center;gap:12px;margin:12px 0;flex-wrap:wrap}.folder-count{color:#6b7280;font-size:12px}.action-bar{display:flex;align-items:center;gap:10px;margin:16px 0;padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fafafa}.spacer{flex:1}
 .ok{color:#15803d;font-weight:600}.bad{color:#b91c1c;font-weight:600}.muted{color:#6b7280}.detail{margin-left:8px;color:#6b7280}.cron{display:block;margin-top:5px;color:#475569;font-size:12px;white-space:nowrap}
 .result-block{margin-top:18px;padding-top:16px;border-top:1px solid #e5e7eb}.result-title{display:flex;gap:12px;align-items:center;margin-bottom:10px}.result-title span{color:#6b7280}
 @media(max-width:900px){.metric-grid{grid-template-columns:repeat(2,1fr)}.control-heading,.action-bar{align-items:flex-start;flex-direction:column}.spacer{display:none}}
