@@ -93,6 +93,19 @@ public class DolphinScheduler319Reader {
         }
     }
 
+    /** Project folders created by migration mirror the source DolphinScheduler projects. */
+    public Map<Long, String> workflowProjectFolders(Settings settings) throws SQLException {
+        Map<Long, String> projects = new HashMap<>();
+        String sql = "SELECT p.code AS workflow_code, pr.name AS project_name " +
+                "FROM t_ds_process_definition p JOIN t_ds_project pr ON pr.code=p.project_code";
+        try (Connection c = open(settings);
+             PreparedStatement ps = c.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) projects.put(rs.getLong("workflow_code"), rs.getString("project_name"));
+        }
+        return projects;
+    }
+
     public Snapshot read(Settings settings) throws SQLException {
         try (Connection c = open(settings)) {
             return new Snapshot(readProjects(c), readWorkflows(c), readTasks(c), readEdges(c), readSchedules(c));
