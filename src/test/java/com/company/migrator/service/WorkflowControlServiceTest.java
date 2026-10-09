@@ -73,14 +73,15 @@ class WorkflowControlServiceTest {
         SettingService settings = settings();
         DataSphereClient target = mock(DataSphereClient.class);
         Settings s = targetSettings();
-        when(target.workflow(s, 11L)).thenReturn(workflow(11, "wf_a", "PUBLISHED"));
-        when(target.workflowSchedule(s, 11L)).thenReturn(schedule(31, true));
+        when(target.workflow(s, 11L)).thenReturn(workflow(11, "wf_a", "PUBLISHED"), workflow(11, "wf_a", "OFFLINE"));
+        when(target.workflowSchedule(s, 11L)).thenReturn(schedule(31, true), schedule(31, false, true), schedule(31, false, false));
         when(target.offlineWorkflow(s, 11L)).thenReturn(schedule(31, false, false));
         WorkflowControlService service = new WorkflowControlService(jdbc, settings, target);
 
         var result = service.offline(new WorkflowControlRequest(List.of(11L)));
 
         assertEquals(1, result.successCount());
+        verify(target).unpublishWorkflow(s, 11L);
         verify(target).offlineWorkflow(s, 11L);
         verify(target, never()).offlineFile(any(), anyLong());
     }
