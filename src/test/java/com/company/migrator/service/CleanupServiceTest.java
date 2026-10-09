@@ -45,7 +45,7 @@ class CleanupServiceTest {
         ordered.verify(target).workflowCode(targetSettings(), 11L);
         ordered.verify(target).workflowStatus(targetSettings(), 11L);
         ordered.verify(target).unpublishWorkflow(targetSettings(), 11L);
-        ordered.verify(target).deleteWorkflowDependencies(targetSettings(), "WF_11");
+        ordered.verify(target).deleteWorkflowDependencies(targetSettings(), "WF_11", java.util.Set.of("WF_11"));
         ordered.verify(target).deleteWorkflow(targetSettings(), 11L);
         ordered.verify(target).fileExists(targetSettings(), 21L);
         ordered.verify(target).fileLifecycleStatus(targetSettings(), 21L);
