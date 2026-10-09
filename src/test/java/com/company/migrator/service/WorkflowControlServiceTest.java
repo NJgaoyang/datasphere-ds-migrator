@@ -101,11 +101,12 @@ class WorkflowControlServiceTest {
 
         var result = service.run(new WorkflowControlRequest(List.of(11L)));
         assertEquals("wf-inst-001", result.items().getFirst().instanceId());
+        assertEquals("SUBMITTED", result.items().getFirst().status());
         assertThrows(IllegalArgumentException.class, () -> service.run(new WorkflowControlRequest(List.of(999L))));
     }
 
     @Test
-    void batchRunAlwaysExecutesDimThenDwdThenDwsThenAds() {
+    void batchRunSubmitsIndependentlyWithoutLayerBlocking() {
         JdbcTemplate jdbc = jdbc("control_layered_run");
         map(jdbc, "WORKFLOW", "101", "WORKFLOW", "11", "ads_sales");
         map(jdbc, "WORKFLOW", "102", "WORKFLOW", "12", "dws_sales");
@@ -131,13 +132,13 @@ class WorkflowControlServiceTest {
         var result = service.run(new WorkflowControlRequest(List.of(11L, 12L, 13L, 14L)));
 
         assertEquals(4, result.successCount());
-        assertEquals(List.of("dim_city", "dwd_order", "dws_sales", "ads_sales"),
+        assertEquals(List.of("ads_sales", "dws_sales", "dim_city", "dwd_order"),
                 result.items().stream().map(i -> i.name()).toList());
-        var ordered = inOrder(target);
-        ordered.verify(target).runWorkflow(s, 13L);
-        ordered.verify(target).runWorkflow(s, 14L);
-        ordered.verify(target).runWorkflow(s, 12L);
-        ordered.verify(target).runWorkflow(s, 11L);
+        assertTrue(result.items().stream().allMatch(i -> "SUBMITTED".equals(i.status())));
+        for (long id : List.of(11L, 12L, 13L, 14L)) {
+            verify(target).runWorkflow(s, id);
+            verify(target, never()).workflowInstanceStatus(s, "inst-" + id);
+        }
     }
 
     private SettingService settings() {
