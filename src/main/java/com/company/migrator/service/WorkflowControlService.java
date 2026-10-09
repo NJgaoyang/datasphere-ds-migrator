@@ -31,7 +31,8 @@ public class WorkflowControlService {
         List<WorkflowControlItem> items = new ArrayList<>();
         Map<Long, String> sourceFolders = Map.of();
         try {
-            sourceFolders = source.workflowProjectFolders(s);
+            Map<Long, String> resolved = source.workflowProjectFolders(s);
+            if (resolved != null) sourceFolders = resolved;
         } catch (Exception ex) {
             // Keep runtime controls usable if the source DolphinScheduler has been retired.
             // Unknown workflow origins remain selectable under an explicit fallback folder.
