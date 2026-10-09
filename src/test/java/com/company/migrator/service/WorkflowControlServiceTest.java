@@ -32,7 +32,7 @@ class WorkflowControlServiceTest {
         when(target.workflowSchedule(s, 11L)).thenReturn(schedule(31, false, false));
         when(target.onlineWorkflow(s, 11L)).thenReturn(schedule(31, true, true));
         when(target.workflowPreflight(s, 11L)).thenReturn(preflight(true, "通过"));
-        WorkflowControlService service = new WorkflowControlService(jdbc, settings, target);
+        WorkflowControlService service = new WorkflowControlService(jdbc, settings, target, mock(com.company.migrator.source.DolphinScheduler319Reader.class));
 
         var result = service.online(new WorkflowControlRequest(List.of(11L)));
 
