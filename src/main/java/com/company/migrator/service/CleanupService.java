@@ -81,11 +81,13 @@ public class CleanupService {
                 try {
                     if (target.workflowExists(s, row.id())) {
                         String workflowCode = target.workflowCode(s, row.id());
-                        target.deleteWorkflowDependencies(s, workflowCode);
                         String status = target.workflowStatus(s, row.id());
-                        if ("PUBLISHED".equalsIgnoreCase(status) || "ONLINE".equalsIgnoreCase(status)) {
-                            target.offlineWorkflow(s, row.id());
+                        if ("PUBLISHED".equalsIgnoreCase(status)) {
+                            // Disabling Cron alone does not change the workflow lifecycle.
+                            // DataForge rejects deletion of PUBLISHED workflows until offline.
+                            target.unpublishWorkflow(s, row.id());
                         }
+                        target.deleteWorkflowDependencies(s, workflowCode);
                         target.deleteWorkflow(s, row.id());
                     }
                     deleteMapping("WORKFLOW", row.id());
