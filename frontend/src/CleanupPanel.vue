@@ -26,13 +26,13 @@
 
     <div class="cleanup-actions">
       <el-button :loading="previewLoading" @click="refreshPreview">重新统计</el-button>
-      <el-button type="warning" :loading="offlineLoading" :disabled="!selected.development || !preview.developmentTaskCount" @click="runOfflineDevelopment">
+      <el-button type="warning" :loading="offlineLoading" :disabled="actionBusy" @click="runOfflineDevelopment">
         一键下线数据开发
       </el-button>
-      <el-button :loading="cleanupLoading" :disabled="!hasSelection || !preview.totalSelectedObjects" @click="runCleanup">
+      <el-button :loading="cleanupLoading" :disabled="actionBusy || !hasSelection || !preview.totalSelectedObjects" @click="runCleanup">
         按勾选范围清除
       </el-button>
-      <el-button type="danger" :loading="cleanupAllLoading" @click="runCleanupAll">
+      <el-button type="danger" :loading="cleanupAllLoading" :disabled="actionBusy" @click="runCleanupAll">
         一键清除全部迁移数据
       </el-button>
     </div>
@@ -60,6 +60,7 @@ const failures = ref([])
 const allSelected = ref(true)
 
 const hasSelection = computed(() => selected.development || selected.workflows)
+const actionBusy = computed(() => offlineLoading.value || cleanupLoading.value || cleanupAllLoading.value)
 const indeterminate = computed(() => hasSelection.value && !(selected.development && selected.workflows))
 
 watch(() => [selected.development, selected.workflows], () => {
@@ -93,9 +94,16 @@ async function refreshPreview() {
 }
 
 async function runOfflineDevelopment() {
+  if (actionBusy.value) return
+  let offlineCount = 0
+  try {
+    const { data } = await axios.post('/api/cleanup/preview', { development: true, workflows: false })
+    offlineCount = data.developmentTaskCount || 0
+    if (!offlineCount) { ElMessage.info('当前没有已映射的数据开发任务'); return }
+  } catch (e) { ElMessage.error(e?.response?.data?.message || e?.message || String(e)); return }
   try {
     await ElMessageBox.confirm(
-      `将检查本迁移工具记录的 ${preview.developmentTaskCount || 0} 个数据开发任务，并把已经发布上线的任务批量下线。是否继续？`,
+      `将检查本迁移工具记录的 ${offlineCount} 个数据开发任务，并把已经发布上线的任务批量下线。是否继续？`,
       '确认一键下线',
       { type: 'warning', confirmButtonText: '确认下线', cancelButtonText: '取消' }
     )
@@ -114,6 +122,7 @@ async function runOfflineDevelopment() {
 }
 
 async function runCleanup() {
+  if (actionBusy.value) return
   const labels = [selected.development ? '数据开发' : '', selected.workflows ? '任务流' : ''].filter(Boolean).join('、')
   try {
     await ElMessageBox.confirm(
@@ -137,6 +146,7 @@ async function runCleanup() {
 }
 
 async function runCleanupAll() {
+  if (actionBusy.value) return
   let allPreview
   try {
     const { data } = await axios.post('/api/cleanup/preview', { development: true, workflows: true })
