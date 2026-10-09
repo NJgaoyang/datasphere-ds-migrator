@@ -13,6 +13,7 @@ public final class WorkflowControlModels {
             long workflowId,
             String workflowCode,
             String name,
+            String projectFolder,
             String definitionStatus,
             boolean scheduleConfigured,
             boolean scheduleEnabled,
