@@ -43,9 +43,9 @@ class CleanupServiceTest {
         var ordered = inOrder(target);
         ordered.verify(target).workflowExists(targetSettings(), 11L);
         ordered.verify(target).workflowCode(targetSettings(), 11L);
-        ordered.verify(target).deleteWorkflowDependencies(targetSettings(), "WF_11");
         ordered.verify(target).workflowStatus(targetSettings(), 11L);
-        ordered.verify(target).offlineWorkflow(targetSettings(), 11L);
+        ordered.verify(target).unpublishWorkflow(targetSettings(), 11L);
+        ordered.verify(target).deleteWorkflowDependencies(targetSettings(), "WF_11");
         ordered.verify(target).deleteWorkflow(targetSettings(), 11L);
         ordered.verify(target).fileExists(targetSettings(), 21L);
         ordered.verify(target).fileLifecycleStatus(targetSettings(), 21L);
