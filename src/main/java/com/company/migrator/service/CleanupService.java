@@ -77,7 +77,16 @@ public class CleanupService {
 
         // DataForge workflow references and cross-workflow dependencies must be removed before dev files.
         if (request.workflowsValue()) {
-            for (MappedTarget row : mappedTargets("WORKFLOW")) {
+            List<MappedTarget> workflowTargets = mappedTargets("WORKFLOW");
+            java.util.Set<String> managedCodes = new java.util.HashSet<>();
+            for (MappedTarget row : workflowTargets) {
+                try {
+                    if (target.workflowExists(s, row.id())) managedCodes.add(target.workflowCode(s, row.id()));
+                } catch (Exception ex) {
+                    // The per-workflow pass below will report the error rather than expanding scope.
+                }
+            }
+            for (MappedTarget row : workflowTargets) {
                 try {
                     if (target.workflowExists(s, row.id())) {
                         String workflowCode = target.workflowCode(s, row.id());
@@ -87,7 +96,7 @@ public class CleanupService {
                             // DataForge rejects deletion of PUBLISHED workflows until offline.
                             target.unpublishWorkflow(s, row.id());
                         }
-                        target.deleteWorkflowDependencies(s, workflowCode);
+                        target.deleteWorkflowDependencies(s, workflowCode, managedCodes);
                         target.deleteWorkflow(s, row.id());
                     }
                     deleteMapping("WORKFLOW", row.id());
