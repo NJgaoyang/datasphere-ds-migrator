@@ -127,83 +127,33 @@ public class WorkflowControlService {
         return result("OFFLINE", selected.size(), results, "一键下线");
     }
 
+    /**
+     * Submit every selected workflow independently. Workflow dependency ordering is
+     * enforced by DataForge Native Scheduler, not inferred from DIM/DWD names.
+     * A failed submission must never block another unrelated workflow.
+     */
     public WorkflowActionResult run(WorkflowControlRequest request) {
         Settings s = settings.get();
-        List<MappedTarget> selected = new ArrayList<>(selectedTargets(request));
-        selected.sort(Comparator.comparingInt((MappedTarget row) -> layerRank(row.name())).thenComparing(MappedTarget::name));
+        List<MappedTarget> selected = selectedTargets(request);
         List<WorkflowActionItem> results = new ArrayList<>();
-        String blocker = null;
         for (MappedTarget row : selected) {
-            String layer = layerName(row.name());
-            if (blocker != null) {
-                results.add(failure(row.id(), row.name(), "BLOCKED", "前置层执行失败，未进入 " + layer + "：" + blocker));
-                continue;
-            }
             try {
                 JsonNode workflow = target.workflow(s, row.id());
                 String name = displayName(row, workflow);
                 if (!"PUBLISHED".equalsIgnoreCase(workflow.path("status").asText(""))) {
-                    String message = "工作流尚未发布，请先执行一键上线";
-                    results.add(failure(row.id(), name, "BLOCKED", message));
-                    blocker = name + "：" + message;
+                    results.add(failure(row.id(), name, "BLOCKED", "工作流尚未发布，请先执行一键上线"));
                     continue;
                 }
-                JsonNode run = target.runWorkflow(s, row.id());
-                String instanceId = run.path("instanceId").asText("");
+                JsonNode submitted = target.runWorkflow(s, row.id());
+                String instanceId = submitted.path("instanceId").asText("");
                 if (instanceId.isBlank()) throw new IllegalStateException("DataForge 未返回工作流实例编号");
-                JsonNode completed = waitForCompletion(s, instanceId);
-                String status = completed.path("status").asText("UNKNOWN").toUpperCase(Locale.ROOT);
-                if (!"SUCCESS".equals(status)) {
-                    String log = completed.path("log").asText("");
-                    String message = layer + " 层运行失败：" + status + (log.isBlank() ? "" : " · " + abbreviate(log, 240));
-                    results.add(failure(row.id(), name, status, message));
-                    blocker = name + "：" + status;
-                    continue;
-                }
-                results.add(success(row.id(), name, "SUCCESS", layer + " 层执行成功；下一层可继续", instanceId));
+                results.add(success(row.id(), name, "SUBMITTED",
+                        "已独立提交 Native Scheduler；请在 DataForge 工作流实例中查看运行结果", instanceId));
             } catch (Exception ex) {
-                String message = rootMessage(ex);
-                results.add(failure(row.id(), row.name(), "FAILED", message));
-                blocker = row.name() + "：" + message;
+                results.add(failure(row.id(), row.name(), "FAILED", rootMessage(ex)));
             }
         }
-        return result("RUN", selected.size(), results, "DIM → DWD → DWS → ADS 分层运行");
-    }
-
-    private JsonNode waitForCompletion(Settings s, String instanceId) throws InterruptedException {
-        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.HOURS.toNanos(2);
-        Set<String> terminal = Set.of("SUCCESS", "FAILED", "STOPPED", "KILLED", "CANCELLED", "PARTIAL_FAILED");
-        while (System.nanoTime() < deadline) {
-            JsonNode status = target.workflowInstanceStatus(s, instanceId);
-            String value = status.path("status").asText("").toUpperCase(Locale.ROOT);
-            if (terminal.contains(value)) return status;
-            Thread.sleep(2_000L);
-        }
-        throw new IllegalStateException("工作流实例等待超时（2 小时）：" + instanceId);
-    }
-
-    private int layerRank(String name) {
-        return switch (layerName(name)) {
-            case "DIM" -> 0;
-            case "DWD" -> 1;
-            case "DWS" -> 2;
-            case "ADS" -> 3;
-            default -> 4;
-        };
-    }
-
-    private String layerName(String name) {
-        String value = name == null ? "" : name.trim().toUpperCase(Locale.ROOT);
-        if (value.equals("DIM") || value.startsWith("DIM_")) return "DIM";
-        if (value.equals("DWD") || value.startsWith("DWD_")) return "DWD";
-        if (value.equals("DWS") || value.startsWith("DWS_")) return "DWS";
-        if (value.equals("ADS") || value.startsWith("ADS_")) return "ADS";
-        return "OTHER";
-    }
-
-    private String abbreviate(String value, int max) {
-        if (value == null || value.length() <= max) return value == null ? "" : value;
-        return value.substring(0, max) + "…";
+        return result("RUN", selected.size(), results, "工作流批量提交");
     }
 
     private void prepareDevelopmentFiles(Settings s, JsonNode workflow, Set<Long> managedFiles) {
