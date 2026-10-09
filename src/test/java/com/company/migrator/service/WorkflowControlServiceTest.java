@@ -56,7 +56,7 @@ class WorkflowControlServiceTest {
         when(target.workflow(s, 11L)).thenReturn(workflow(11, "wf_manual", "DRAFT"));
         when(target.workflowStatus(s, 11L)).thenReturn("DRAFT");
         when(target.workflowSchedule(s, 11L)).thenReturn(schedule(0, false));
-        WorkflowControlService service = new WorkflowControlService(jdbc, settings, target);
+        WorkflowControlService service = new WorkflowControlService(jdbc, settings, target, mock(com.company.migrator.source.DolphinScheduler319Reader.class));
 
         var result = service.online(new WorkflowControlRequest(List.of(11L)));
 
@@ -76,7 +76,7 @@ class WorkflowControlServiceTest {
         when(target.workflow(s, 11L)).thenReturn(workflow(11, "wf_a", "PUBLISHED"), workflow(11, "wf_a", "OFFLINE"));
         when(target.workflowSchedule(s, 11L)).thenReturn(schedule(31, false, true), schedule(31, false, false));
         when(target.offlineWorkflow(s, 11L)).thenReturn(schedule(31, false, false));
-        WorkflowControlService service = new WorkflowControlService(jdbc, settings, target);
+        WorkflowControlService service = new WorkflowControlService(jdbc, settings, target, mock(com.company.migrator.source.DolphinScheduler319Reader.class));
 
         var result = service.offline(new WorkflowControlRequest(List.of(11L)));
 
@@ -100,7 +100,7 @@ class WorkflowControlServiceTest {
         ObjectNode completed = mapper.createObjectNode();
         completed.put("instanceId", "wf-inst-001"); completed.put("status", "SUCCESS"); completed.put("log", "ok");
         when(target.workflowInstanceStatus(s, "wf-inst-001")).thenReturn(completed);
-        WorkflowControlService service = new WorkflowControlService(jdbc, settings, target);
+        WorkflowControlService service = new WorkflowControlService(jdbc, settings, target, mock(com.company.migrator.source.DolphinScheduler319Reader.class));
 
         var result = service.run(new WorkflowControlRequest(List.of(11L)));
         assertEquals("wf-inst-001", result.items().getFirst().instanceId());
@@ -130,7 +130,7 @@ class WorkflowControlServiceTest {
             completed.put("instanceId", "inst-" + id); completed.put("status", "SUCCESS"); completed.put("log", "ok");
             when(target.workflowInstanceStatus(s, "inst-" + id)).thenReturn(completed);
         }
-        WorkflowControlService service = new WorkflowControlService(jdbc, settings, target);
+        WorkflowControlService service = new WorkflowControlService(jdbc, settings, target, mock(com.company.migrator.source.DolphinScheduler319Reader.class));
 
         var result = service.run(new WorkflowControlRequest(List.of(11L, 12L, 13L, 14L)));
 
