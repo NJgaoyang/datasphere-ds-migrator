@@ -3,6 +3,7 @@ package com.company.migrator.service;
 import com.company.migrator.common.MigrationModels.Settings;
 import com.company.migrator.common.WorkflowControlModels.*;
 import com.company.migrator.target.DataSphereClient;
+import com.company.migrator.source.DolphinScheduler319Reader;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -16,17 +17,37 @@ public class WorkflowControlService {
     private final JdbcTemplate jdbc;
     private final SettingService settings;
     private final DataSphereClient target;
+    private final DolphinScheduler319Reader source;
 
-    public WorkflowControlService(JdbcTemplate jdbc, SettingService settings, DataSphereClient target) {
+    public WorkflowControlService(JdbcTemplate jdbc, SettingService settings, DataSphereClient target, DolphinScheduler319Reader source) {
         this.jdbc = jdbc;
         this.settings = settings;
         this.target = target;
+        this.source = source;
     }
 
     public WorkflowControlSnapshot snapshot() {
         Settings s = settings.get();
         List<WorkflowControlItem> items = new ArrayList<>();
+        Map<Long, String> sourceFolders = Map.of();
+        try {
+            sourceFolders = source.workflowProjectFolders(s);
+        } catch (Exception ex) {
+            // Keep runtime controls usable if the source DolphinScheduler has been retired.
+            // Unknown workflow origins remain selectable under an explicit fallback folder.
+        }
+        Map<Long, String> foldersByTarget = new HashMap<>();
+        for (Map<String, Object> binding : jdbc.queryForList(
+                "SELECT source_code,target_id FROM migration_object_map WHERE source_type='WORKFLOW' AND target_type='WORKFLOW'")) {
+            try {
+                long code = Long.parseLong(String.valueOf(binding.get("source_code")));
+                long targetId = Long.parseLong(String.valueOf(binding.get("target_id")));
+                String folder = sourceFolders.get(code);
+                if (folder != null && !folder.isBlank()) foldersByTarget.put(targetId, folder);
+            } catch (NumberFormatException ignored) { }
+        }
         for (MappedTarget row : mappedTargets("WORKFLOW")) {
+            String folder = foldersByTarget.getOrDefault(row.id(), "未分类项目");
             try {
                 JsonNode workflow = target.workflow(s, row.id());
                 JsonNode schedule = target.workflowSchedule(s, row.id());
@@ -44,10 +65,10 @@ public class WorkflowControlService {
                     preflightMessage = "无 Native Scheduler 调度，仅保留手动运行";
                 }
                 items.add(new WorkflowControlItem(row.id(), workflow.path("workflowCode").asText(""),
-                        displayName(row, workflow), status, configured, enabled, schedule.path("cronExpression").asText(""),
+                        displayName(row, workflow), folder, status, configured, enabled, schedule.path("cronExpression").asText(""),
                         ready, preflightMessage, ""));
             } catch (Exception ex) {
-                items.add(new WorkflowControlItem(row.id(), "", row.name(), "MISSING", false, false, "",
+                items.add(new WorkflowControlItem(row.id(), "", row.name(), folder, "MISSING", false, false, "",
                         false, "", rootMessage(ex)));
             }
         }
