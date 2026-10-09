@@ -243,18 +243,28 @@ public class DataSphereClient {
         request(settings).delete().uri("/api/workflows/" + workflowId).retrieve().toBodilessEntity();
     }
 
-    public void deleteWorkflowDependencies(Settings settings, String workflowCode) {
+    public void deleteWorkflowDependencies(Settings settings, String workflowCode, java.util.Set<String> managedCodes) {
         if (workflowCode == null || workflowCode.isBlank()) return;
         JsonNode rows = data(get(settings, "/api/scheduler/dependencies"));
-        if (!rows.isArray()) return;
+        if (!rows.isArray()) throw new IllegalStateException("无法读取跨工作流依赖，停止危险清理");
+        // Check every impacted edge before deleting any of them.
+        // External workflows are not owned by this migration and must remain untouched.
+        for (JsonNode row : rows) {
+            String downstream = row.path("downstreamWorkflowCode").asText("");
+            String upstream = row.path("upstreamWorkflowCode").asText("");
+            if (!workflowCode.equals(downstream) && !workflowCode.equals(upstream)) continue;
+            if (!managedCodes.contains(downstream) || !managedCodes.contains(upstream)) {
+                throw new IllegalStateException("存在非迁移工作流的跨工作流依赖（"
+                        + upstream + " → " + downstream + "），请先在 DataForge 手动解除后再清理");
+            }
+        }
         for (JsonNode row : rows) {
             String downstream = row.path("downstreamWorkflowCode").asText("");
             String upstream = row.path("upstreamWorkflowCode").asText("");
             if (!workflowCode.equals(downstream) && !workflowCode.equals(upstream)) continue;
             long dependencyId = row.path("id").asLong(0);
-            if (dependencyId > 0) {
-                request(settings).delete().uri("/api/scheduler/dependencies?id=" + dependencyId).retrieve().toBodilessEntity();
-            }
+            if (dependencyId <= 0) throw new IllegalStateException("跨工作流依赖缺少 ID，拒绝删除");
+            request(settings).delete().uri("/api/scheduler/dependencies?id=" + dependencyId).retrieve().toBodilessEntity();
         }
     }
 
