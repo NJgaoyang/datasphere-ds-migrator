@@ -3,7 +3,7 @@
     <div class="control-heading">
       <div>
         <h2>运行控制</h2>
-        <p>只操作本迁移工具映射的 Workflow。一键上线会发布固定版本快照并启用已迁移的源端 Cron；跑任务严格按 DIM → DWD → DWS → ADS 顺序执行。</p>
+        <p>只操作本迁移工具映射的 Workflow。一键上线会发布固定版本快照并启用已迁移的源端 Cron；批量运行独立提交各工作流，只有 DataForge 中明确配置的依赖关系才控制先后顺序。</p>
       </div>
       <el-button :loading="loading" @click="load">刷新状态</el-button>
     </div>
@@ -23,7 +23,7 @@
       <span class="spacer" />
       <el-button type="success" :loading="actionLoading === 'online'" :disabled="!selectedIds.length || !!actionLoading" @click="onlineSelected">一键上线</el-button>
       <el-button type="warning" plain :loading="actionLoading === 'offline'" :disabled="!selectedIds.length || !!actionLoading" @click="offlineSelected">一键下线</el-button>
-      <el-button type="primary" :loading="actionLoading === 'run'" :disabled="!selectedIds.length || !!actionLoading" @click="runSelected">跑任务（DIM → DWD → DWS → ADS）</el-button>
+      <el-button type="primary" :loading="actionLoading === 'run'" :disabled="!selectedIds.length || !!actionLoading" @click="runSelected">批量运行</el-button>
     </div>
 
     <el-table ref="tableRef" :data="snapshot.workflows || []" height="480" row-key="workflowId" @selection-change="selectionChanged">
@@ -84,7 +84,7 @@ const tableRef = ref(null)
 const lastResult = ref(null)
 
 const definitionLabel = status => ({ DRAFT: '草稿', PUBLISHED: '已发布', MISSING: '不存在' }[status] || status || '-')
-const actionLabel = action => ({ ONLINE: '一键上线结果', OFFLINE: '一键下线结果', RUN: '运行结果' }[action] || action)
+const actionLabel = action => ({ ONLINE: '一键上线结果', OFFLINE: '一键下线结果', RUN: '运行提交结果' }[action] || action)
 
 async function load(selectAll = false) {
   loading.value = true
@@ -117,7 +117,7 @@ async function offlineSelected() {
 
 async function runSelected() {
   await ElMessageBox.confirm(
-    `将运行所选 ${selectedIds.value.length} 个 Workflow，并严格按 DIM → DWD → DWS → ADS 顺序执行；每个 Workflow 成功后才继续下一个，前置失败将阻断后续。Workflow 必须已发布。是否继续？`,
+    `将独立提交所选 ${selectedIds.value.length} 个 Workflow，不因某个工作流失败而阻塞其他工作流。真实依赖关系由 DataForge 调度器处理。Workflow 必须已发布。是否继续？`,
     '确认跑任务', { type: 'warning', confirmButtonText: '立即运行', cancelButtonText: '取消' })
   await execute('run', selectedIds.value)
 }
