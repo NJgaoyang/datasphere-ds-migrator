@@ -110,7 +110,7 @@ async function onlineSelected() {
 
 async function offlineSelected() {
   await ElMessageBox.confirm(
-    `将关闭所选 ${selectedIds.value.length} 个 Workflow 的 Native Scheduler 自动调度。已发布定义和开发任务生产版本会保留，仍可手动运行。是否继续？`,
+    `将真正下线所选 ${selectedIds.value.length} 个 Workflow（发布状态变为已下线），同时关闭自动调度；开发任务版本保留。是否继续？`,
     '确认一键下线', { type: 'warning', confirmButtonText: '确认下线', cancelButtonText: '取消' })
   await execute('offline', selectedIds.value)
 }
